@@ -15,10 +15,37 @@
     "noEmit": true,
     "baseUrl": ".",
     "paths": {
-      "@/*": ["ui/*"]
+      "@/*": ["ui/*"],
+      "@components/*": ["ui/src/components/*"],
+      "@utils/*": ["ui/src/utils/*"],
+      "@store/*": ["ui/src/store/*"]
     },
-    "types": ["node", "vite/client"]
+    "types": ["node", "vite/client"],
+    "noUnusedLocals": true,
+    "noUnusedParameters": true,
+    "noImplicitReturns": true,
+    "noFallthroughCasesInSwitch": true,
+    "exactOptionalPropertyTypes": true,
+    "noUncheckedIndexedAccess": true,
+    "declarationMap": false,
+    "sourceMap": true
   },
-  "include": ["ui/**/*.ts", "ui/**/*.vue", "ui/**/*.d.ts", "tests/**/*.ts"],
-  "exclude": ["node_modules", "dist"]
+  "include": [
+    "ui/**/*.ts",
+    "ui/**/*.vue",
+    "ui/**/*.d.ts",
+    "tests/**/*.ts",
+    "vite.config.ts"
+  ],
+  "exclude": [
+    "node_modules",
+    "dist",
+    "build",
+    "coverage",
+    "ui/static/js/api.js"
+  ],
+  "vueCompilerOptions": {
+    "target": 3.4,
+    "strictTemplates": true
+  }
 }

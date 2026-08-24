@@ -1,3 +1,7 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
 [project]
 name = "moe-ultra-engine"
 version = "1.0.0"
@@ -17,205 +21,88 @@ classifiers = [
     "Topic :: Scientific/Engineering :: Artificial Intelligence",
     "Topic :: Software Development :: Libraries :: Python Modules",
 ]
-keywords = ["moe", "inference", "llm", "airllm", "quantization", "offloading", "transformers"]
+keywords = ["moe", "inference", "llm", "memory-optimization", "fastapi"]
+
 dependencies = [
-    # Core ML Framework
-    "numpy>=1.26.0,<3.0.0",
-    "torch>=2.3.0,<3.0.0",
-    "transformers>=4.40.0,<5.0.0",
-    
-    # Acceleration & Optimization
-    "accelerate>=0.30.0,<1.0.0",
-    "bitsandbytes>=0.43.0,<1.0.0",
-    "peft>=0.9.0,<1.0.0",
-    "safetensors>=0.4.0,<1.0.0",
-    
-    # Quantization Tools
-    "optimum>=1.17.0,<2.0.0",
-    "auto-gptq>=0.5.0,<1.0.0",
-    "llmcompressor>=0.3.0,<1.0.0",
-    
-    # Web API Stack
-    "fastapi>=0.109.0,<1.0.0",
-    "uvicorn[standard]>=0.27.0,<1.0.0",
-    "pydantic>=2.5.0,<3.0.0",
-    "httpx>=0.26.0,<1.0.0",
-    "python-multipart>=0.0.9,<1.0.0",
+    "fastapi>=0.109.0,<0.110.0",
+    "uvicorn[standard]>=0.27.0,<0.28.0",
+    "pydantic>=2.5.0,<2.6.0",
+    "pydantic-settings>=2.1.0,<2.2.0",
+    "numpy>=1.26.0,<1.27.0",
+    "torch>=2.1.0,<2.2.0",
+    "transformers>=4.37.0,<4.38.0",
+    "accelerate>=0.26.0,<0.27.0",
+    "sentencepiece>=0.1.99,<0.2.0",
+    "protobuf>=4.25.0,<4.26.0",
+    "httpx>=0.26.0,<0.27.0",
     "aiofiles>=23.2.0,<24.0.0",
-    
-    # HuggingFace Integration
-    "huggingface-hub>=0.20.0,<1.0.0",
-    "tokenizers>=0.19.0,<1.0.0",
-    
-    # Utility Libraries
-    "tqdm>=4.66.0,<5.0.0",
-    "rich>=13.7.0,<14.0.0",
-    "click>=8.1.0,<9.0.0",
-    "pyyaml>=6.0.1,<7.0.0",
-    "omegaconf>=2.3.0,<3.0.0",
-    "tenacity>=8.2.0,<10.0.0",
-    "retrying>=1.3.0,<2.0.0",
-    
-    # Monitoring & Logging
-    "structlog>=24.1.0,<25.0.0",
-    "loguru>=0.7.0,<1.0.0",
-    "prometheus-client>=0.19.0,<1.0.0",
-    
-    # Async Support
-    "asyncio>=3.4.0,<4.0.0",
-    "anyio>=4.3.0,<5.0.0",
-    "trio>=0.24.0,<1.0.0",
+    "psycopg2-binary>=2.9.0,<2.10.0",
+    "alembic>=1.13.0,<1.14.0",
+    "python-multipart>=0.0.6,<0.0.7",
+    "pyyaml>=6.0.0,<6.1.0",
+    "redis>=5.0.0,<5.1.0",
+    "prometheus-client>=0.19.0,<0.20.0",
 ]
 
 [project.optional-dependencies]
 dev = [
-    # Testing
     "pytest>=7.4.0,<8.0.0",
+    "pytest-asyncio>=0.23.0,<0.24.0",
     "pytest-cov>=4.1.0,<5.0.0",
-    "pytest-asyncio>=0.23.0,<1.0.0",
-    "pytest-xdist>=3.5.0,<4.0.0",
-    "hypothesis>=6.100.0,<7.0.0",
-    "faker>=23.0.0,<24.0.0",
-    
-    # Type Checking
-    "mypy>=1.8.0,<2.0.0",
-    "types-requests>=2.31.0,<3.0.0",
-    "types-pyyaml>=6.0.0,<7.0.0",
-    "pyright>=1.1.340,<2.0.0",
-    
-    # Code Quality
     "black>=24.1.0,<25.0.0",
-    "ruff>=0.3.0,<1.0.0",
-    "isort>=5.13.0,<6.0.0",
-    "flake8>=7.0.0,<8.0.0",
-    "bandit>=1.7.0,<2.0.0",
-    "safety>=2.3.0,<4.0.0",
-    
-    # Pre-commit Hooks
-    "pre-commit>=3.6.0,<4.0.0",
-    "commitlint>=17.0.0,<19.0.0",
-    
-    # Documentation
-    "mkdocs>=1.5.0,<2.0.0",
-    "mkdocs-material>=9.5.0,<10.0.0",
-    "pdoc>=14.4.0,<15.0.0",
+    "ruff>=0.1.0,<0.2.0",
+    "mypy>=1.8.0,<1.9.0",
+    "pre-commit>=3.6.0,<3.7.0",
+    "bandit>=1.7.0,<1.8.0",
+    "safety>=2.3.0,<2.4.0",
+]
+ml = [
+    "bitsandbytes>=0.42.0,<0.43.0",
+    "peft>=0.8.0,<0.9.0",
+    "safetensors>=0.4.0,<0.5.0",
 ]
 
-all = [
-    "moe-ultra-engine[dev]",
-]
+[project.urls]
+Homepage = "https://github.com/thalamus-project/moe-ultra-engine"
+Documentation = "https://docs.moe-ultra.ai"
+Repository = "https://github.com/thalamus-project/moe-ultra-engine.git"
 
-[project.scripts]
-moe-run = "scripts.moe_cli:main"
-moe-download = "scripts.download_model:main"
-moe-convert = "scripts.convert_gguf:main"
-moe-quantize = "scripts.quantize_model:main"
-moe-benchmark = "scripts.benchmark:main"
+[tool.hatch.build.targets.wheel]
+packages = ["src", "api", "core", "db", "scripts"]
 
-[build-system]
-requires = ["setuptools>=68.0.0","wheel>=0.42.0"]
-build-backend = "setuptools.build_meta"
-
-[tool.setuptools.packages.find]
-where = ["."]
-include = ["core*", "api*", "scripts*", "tests*"]
-
-[tool.setuptools.package-data]
-"*" = ["*.yaml", "*.yml", "*.json", "*.sql", "*.txt", "*.toml"]
-
-[tool.pytest.ini_options]
-minversion = "7.0"
-addopts = ["-ra", "-q", "--strict-markers", "--strict-config"]
-markers = [
-    "unit: unit tests",
-    "integration: integration tests",
-    "e2e: end-to-end tests",
-    "slow: slow running tests",
-    "gpu: requires GPU hardware",
-]
-testpaths = ["tests"]
-python_files = ["test_*.py", "*_test.py"]
-python_functions = ["test_*"]
-
-[tool.coverage.run]
-source = ["core", "api"]
-branch = true
-omit = ["*/tests/*", "*/__pycache__/*", "*/migrations/*"]
-
-[tool.coverage.report]
-exclude_lines = ["pragma: no cover", "def __repr__", "raise NotImplementedError", "if __name__ == .__main__."]
-show_missing = true
-fail_under = 80
-
-[tool.black]
-line-length = 100
-target-version = ["py310", "py311", "py312"]
-include = "\\.pyi?$"
-extend-exclude = "(migrations|venv|.venv)"
+[tool.hatch.envs.default]
+type = "virtual"
+features = ["dev", "ml"]
 
 [tool.ruff]
 line-length = 100
 target-version = "py310"
-select = ["E", "F", "W", "B", "C4", "UP", "I", "N", "SIM", "ARG", "PTH", "RUF"]
-extend-ignore = ["B904", "B008"]
-ignore = []
-fixable = ["ALL"]
-unfixable = []
+select = ["E", "F", "W", "I", "N", "UP", "B", "C4", "SIM"]
+ignore = ["E501", "B008"]
 
-[tool.ruff.lint.per-file-ignores]
-"tests/**/*" = ["S101", "S105", "S106", "D103", "D104"]
-"scripts/**/*" = ["T201", "S603", "S607"]
-"config/*.py" = ["F401"]
+[tool.ruff.per-file-ignores]
+"__init__.py" = ["F401"]
+"tests/*" = ["S101"]
+
+[tool.black]
+line-length = 100
+target-version = ["py310", "py311", "py312"]
 
 [tool.mypy]
-python_version = "3.10"
+strict = true
+ignore_missing_imports = true
 warn_return_any = true
 warn_unused_configs = true
-disallow_untyped_defs = true
-disallow_incomplete_defs = true
-check_untyped_defs = true
-strict_optional = true
-no_implicit_reexport = true
-warn_redundant_casts = true
-warn_unused_ignores = true
-plugins = ["pydantic.mypy"]
-mypy_path = "$MYPY_CONFIG_FILE_DIR:$MYPY_CONFIG_FILE_DIR/stubs"
 
-[tool.mypy.plugins.pydantic]
-init_forbid_extra = true
-init_typed = true
-warn_required_dynamic_aliases = true
-warn_untyped_fields = true
-
-[tool.pyright]
-include = ["core", "api", "scripts"]
-exclude = ["**/__pycache__", "migrations", "tests"]
-pythonVersion = "3.10"
-typeCheckingMode = "basic"
-reportMissingImports = true
-reportMissingTypeStubs = false
-reportUnknownMemberType = false
-reportUnknownParameterType = false
-reportUnknownVariableType = false
-reportUntypedFunctionDecorator = false
-reportUntypedClassDecorator = false
-reportPrivateImportUsage = false
-useLibraryCodeForTypes = true
-
-[tool.isort]
-profile = "black"
-line_length = 100
-skip = ["migrations", "venv", ".venv", "node_modules"]
-known_first_party = ["core", "api", "scripts"]
-known_third_party = ["numpy", "torch", "transformers", "fastapi", "pydantic", "httpx", "tqdm"]
-
-[tool.pre-commit]
-repos = [
-    {repo = "https://github.com/pre-commit/pre-commit-hooks", rev = "v4.5.0", hooks = [{id = "trailing-whitespace"}, {id = "end-of-file-fixer"}, {id = "check-yaml"}, {id = "check-json"}]},
-    {repo = "https://github.com/astral-sh/ruff-pre-commit", rev = "v0.3.0", hooks = [{id = "ruff", args = ["--fix"]}, {id = "ruff-format"}]},
-    {repo = "https://github.com/psf/black", rev = "24.1.0", hooks = [{id = "black"}]},
-    {repo = "https://github.com/pre-commit/mirrors-mypy", rev = "v1.8.0", hooks = [{id = "mypy", additional_dependencies = ["pydantic"]}]},
+[tool.pytest.ini_options]
+minversion = "7.0"
+addopts = "-ra -q --cov=core --cov=api --cov-report=term-missing"
+testpaths = ["tests"]
+filterwarnings = [
+    "error::DeprecationWarning",
+    "ignore::DeprecationWarning:pkg_resources.*",
 ]
 
-[tool.uv]
-default-groups = ["dev"]
+[tool.bandit]
+exclude_dirs = ["tests", "venv", ".venv"]
+skips = ["B101"]
