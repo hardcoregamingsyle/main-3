@@ -22,167 +22,94 @@ classifiers = [
     "Programming Language :: Python :: 3.10",
     "Programming Language :: Python :: 3.11",
     "Programming Language :: Python :: 3.12",
-    "Topic :: Scientific/Engineering :: Artificial Intelligence",
-    "Topic :: Scientific/Engineering :: Information Analysis"
+    "Topic :: Scientific/Engineering :: Artificial Intelligence"
 ]
-keywords = [
-    "mixture-of-experts",
-    "moes",
-    "large-language-models",
-    "llm-inference",
-    "machine-learning",
-    "deep-learning",
-    "quantization",
-    "model-optimization"
-]
+keywords = ["mixture-of-experts", "moef","llm","inference","quantization","gguf"]
 
 [project.optional-dependencies]
-# Core ML Inference Dependencies
-torch = [
-    "torch>=2.0.0",
-    "torchvision>=0.15.0",
-    "torchaudio>=2.0.0"
+dev = [
+    "pytest>=7.4.0",
+    "pytest-cov>=4.1.0",
+    "black>=23.12.0",
+    "isort>=5.13.0",
+    "flake8>=6.1.0",
+    "mypy>=1.8.0",
+    "ruff>=0.1.0",
+    "pre-commit>=3.6.0"
 ]
-transformers = [
-    "transformers>=4.35.0",
+testing = [
+    "pytest>=7.4.0",
+    "pytest-cov>=4.1.0",
+    "pytest-asyncio>=0.21.0",
+    "httpx>=0.25.0",
+    "respx>=0.21.0"
+]
+docs = [
+    "mkdocs>=1.5.0",
+    "mkdocs-material>=9.5.0",
+    "pymdown-extensions>=10.0.0"
+]
+ml-inference = [
+    "torch>=2.1.0",
+    "transformers>=4.36.0",
+    "accelerate>=0.25.0",
+    "safetensors>=0.4.0",
     "sentencepiece>=0.1.99",
-    "protobuf>=4.23.0"
+    "protobuf>=4.25.0",
+    "onnxruntime>=1.16.0",
+    "bitsandbytes>=0.41.0",
+    "auto-gptq>=0.6.0",
+    "optimum>=1.16.0",
+    "flash-attn>=2.5.0",
+    "triton>=2.2.0"
 ]
-numpy-stack = [
-    "numpy>=1.24.0,<2.0.0",
-    "scipy>=1.11.0",
-    "pandas>=2.0.0"
-]
-fastapi-stack = [
-    "fastapi>=0.104.0",
-    "uvicorn[standard]>=0.24.0",
-    "pydantic>=2.4.0",
+fastapi = [
+    "fastapi>=0.109.0",
+    "uvicorn[standard]>=0.27.0",
+    "pydantic>=2.5.0",
     "pydantic-settings>=2.1.0",
     "python-multipart>=0.0.6"
 ]
-
-# Model Loading & Quantization
-gguf-tools = [
-    "gguf>=0.6.0",
-    "safetensors>=0.4.0"
+gpu-support = [
+    "cuda-python>=12.3.0",
+    "nvidia-cublas-cu12>=12.1.0",
+    "nvidia-cudnn-cu12>=8.9.0"
 ]
-accelerate = [
-    "accelerate>=0.24.0"
-]
-sentence-transformers = [
-    "sentence-transformers>=2.2.0"
-]
-
-# Performance Optimization
-quantization = [
-    "bitsandbytes>=0.41.0",
-    "optimum>=1.15.0",
-    "onnxruntime>=1.16.0"
-]
-
-# Async & Concurrency
-asyncio = [
-    "anyio>=4.0.0",
-    "httpx>=0.25.0"
-]
-
-# Logging & Monitoring
-observability = [
-    "loguru>=0.7.0",
-    "prometheus-client>=0.19.0",
-    "opentelemetry-api>=1.20.0",
-    "opentelemetry-sdk>=1.20.0"
-]
-
-# Testing
-test = [
-    "pytest>=7.4.0",
-    "pytest-asyncio>=0.23.0",
-    "pytest-cov>=4.1.0",
-    "pytest-xdist>=3.4.0",
-    "faker>=21.0.0",
-    "responses>=0.24.0"
-]
-
-# Development
-development = [
-    "black>=23.11.0",
-    "isort>=5.12.0",
-    "flake8>=7.0.0",
-    "mypy>=1.7.0",
-    "ruff>=0.1.0",
-    "pre-commit>=3.6.0",
-    "hypothesis>=6.90.0"
-]
-
-# Documentation
-docs = [
-    "mkdocs>=1.5.0",
-    "mkdocs-material>=9.4.0",
-    "mkdocstrings[python]>=0.24.0"
-]
-
-# Full installation with all features
 all = [
-    "moe-ultra-engine[torch]",
-    "moe-ultra-engine[transformers]",
-    "moe-ultra-engine[numpy-stack]",
-    "moe-ultra-engine[fastapi-stack]",
-    "moe-ultra-engine[gguf-tools]",
-    "moe-ultra-engine[accelerate]",
-    "moe-ultra-engine[sentence-transformers]",
-    "moe-ultra-engine[quantization]",
-    "moe-ultra-engine[asyncio]",
-    "moe-ultra-engine[observability]",
-    "moe-ultra-engine[test]",
-    "moe-ultra-engine[development]",
-    "moe-ultra-engine[docs]"
+    "moe-ultra-engine[ml-inference]",
+    "moe-ultra-engine[fastapi]",
+    "moe-ultra-engine[gpu-support]",
+    "moe-ultra-engine[dev]"
 ]
-
-[project.urls]
-Homepage = "https://github.com/thalamus/moe-ultra-engine"
-Documentation = "https://thalamus.github.io/moe-ultra-engine"
-Repository = "https://github.com/thalamus/moe-ultra-engine.git"
-Issues = "https://github.com/thalamus/moe-ultra-engine/issues"
-Changelog = "https://github.com/thalamus/moe-ultra-engine/blob/main/CHANGELOG.md"
 
 [project.scripts]
 moe-ultra = "core.cli:main"
-moe-benchmark = "scripts.benchmark:main"
-moe-download = "scripts.download_model:main"
-moe-quantize = "scripts.quantize_model:main"
-moe-convert = "scripts.convert_gguf:main"
+download-model = "scripts.download_model:main"
+convert-gguf = "scripts.convert_gguf:main"
+quantize-model = "scripts.quantize_model:main"
+benchmark = "scripts.benchmark:main"
+
+[project.urls]
+Homepage = "https://github.com/thalamus/moe-ultra-engine"
+Documentation = "https://github.com/thalamus/moe-ultra-engine#readme"
+Repository = "https://github.com/thalamus/moe-ultra-engine.git"
+Issues = "https://github.com/thalamus/moe-ultra-engine/issues"
 
 [tool.hatch.build.targets.wheel]
-packages = ["core", "api", "ui", "db", "tests"]
-
-[tool.hatch.build.targets.sdist]
-exclude = [
-    "node_modules",
-    ".git",
-    ".github",
-    "*.egg-info"
-]
+packages = ["."]
+include = ["*.yaml","*.yml"]
 
 [tool.pytest.ini_options]
-minversion = "7.0"
-addopts = [
-    "-ra",
-    "-q",
-    "--strict-markers",
-    "--strict-config"
-]
-testpaths = [
-    "tests"
-]
-markers = [
-    "unit: Unit tests",
-    "integration: Integration tests",
-    "e2e: End-to-end tests",
-    "slow: Slow-running tests",
-    "requires_network: Tests requiring network access"
-]
+testpaths = ["tests"]
+python_files = ["test_*.py","*_test.py"]
+python_classes = ["Test*"]
+python_functions = ["test_*"]
+addopts = "-v --tb=short"
 asyncio_mode = "auto"
+filterwarnings = [
+    "ignore::DeprecationWarning",
+    "ignore::UserWarning"
+]
 
 [tool.mypy]
 python_version = "3.10"
@@ -191,142 +118,41 @@ warn_unused_configs = true
 disallow_untyped_defs = true
 disallow_incomplete_defs = true
 check_untyped_defs = true
-no_implicit_reexport = true
 strict_optional = true
 warn_redundant_casts = true
 warn_unused_ignores = true
-mypy_path = "stubs"
-
-[[tool.mypy.overrides]]
-module = ["torch.*", "transformers.*", "numpy.*", "scipy.*"]
-ignore_missing_imports = true
+no_implicit_optional = true
+show_error_codes = true
 
 [tool.ruff]
-target-version = "py310"
 line-length = 100
-task-tags = ["TODO", "FIXME", "XXX"]
-select = [
-    "E",      # pycodestyle errors
-    "W",      # pycodestyle warnings
-    "F",      # Pyflakes
-    "I",      # isort
-    "B",      # flake8-bugbear
-    "C4",     # flake8-comprehensions
-    "UP",     # pyupgrade
-    "SIM",    # flake8-simplify
-    "TCH",    # flake8-type-checking
-    "N",      # pep8-naming
-    "D",      # pydocstyle
-    "ANN",    # flake8-annotations
-    "S",      # flake8-bandit
-    "BLE",    # flake8-blind-except
-    "FBT",    # flake8-boolean-trap
-    "PTH",    # flake8-use-pathlib
-    "PIE",    # flake8-pie
-    "RSE",    # flake8-raise
-    "RET",    # flake8-return
-    "TRY",    # tryceratops
-    "FLY",    # flynt
-    "PERF",   # perflint
-    "PL",     # pylint
-    "C90",    # mccabe
-]
-ignore = [
-    "E501",   # line too long (handled by black)
-    "D100",   # public module docstring missing
-    "D104",   # public package docstring missing
-    "D401",   # imperative mood in docstring
-]
-
-[tool.ruff.per-file-ignores]
-"__init__.py" = ["F401"]
-"tests/*" = ["ANN", "D", "S101"]
-"scripts/*" = ["D", "S101"]
+target-version = "py310"
+select = ["E","F","W","B","C4","UP","SIM","RUF"]
+ignore = ["E501","B008","SIM115"]
+exclude = ["__pycache__","build","dist",".git","venv",".venv"]
 
 [tool.black]
 line-length = 100
-target-version = ["py310", "py311", "py312"]
+target-version = ["py310","py311","py312"]
 include = "\\.pyi?$"
-extend-exclude = """
-    node_modules/
-    __pycache__/
-    .eggs/
-    *.egg-info/
-    dist/
-    build/
-"""
+exclude = "\\.git|__pycache__|build|dist|venv"
 
 [tool.isort]
 profile = "black"
 line_length = 100
-known_first_party = ["core", "api", "ui", "db", "tests"]
-known_third_party = [
-    "torch",
-    "transformers",
-    "numpy",
-    "scipy",
-    "fastapi",
-    "uvicorn",
-    "pydantic",
-    "requests",
-    "pytest"
-]
-multi_line_output = 3
+skip = ["__pycache__","venv",".venv","build","dist"]
 
 [tool.coverage.run]
-source = ["core", "api", "tests"]
-omit = [
-    "*/tests/*",
-    "*/migrations/*",
-    "*/__pycache__/*"
-]
+source = ["."]
+object_branches = true
 branch = true
-relative_files = true
 
 [tool.coverage.report]
 exclude_lines = [
     "pragma: no cover",
     "def __repr__",
+    "raise AssertionError",
     "raise NotImplementedError",
-    "if TYPE_CHECKING:",
-    "if __name__ == .__main__."
+    "if __name__ == \"__main__\":"
 ]
 show_missing = true
-fail_under = 80
-
-[tool.pylint.main]
-jobs = 0
-persistent = false
-score = true
-
-[tool.pylint.messages_control]\ndeletion = [
-    "invalid-name",
-    "missing-docstring",
-    "too-many-arguments"
-]
-disabled = [
-    "broad-except",
-    "fixme"
-]
-max-line-length = 100
-
-[tool.pylint.format]
-max-line-length = 100
-indent-string = "    "
-indent-blank-lines = true
-
-[tool.pylint.typecheck]
-signature-mutators = [
-    "functools.partial",
-    "builtins.partial"
-]
-ignored-modules = [
-    "torch",
-    "transformers",
-    "numpy"
-]
-
-[tool.codespell]
-skip = "node_modules,.git,*.json,*.lock"
-quiet-level = 3
-ignore-words-list = "moes,inferece"
