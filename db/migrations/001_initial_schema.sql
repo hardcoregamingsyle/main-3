@@ -1,183 +1,99 @@
 -- MoE Ultra Engine Database Schema
 -- Version: 1.0.0
--- Created: 2026-08-24
+-- Date: 2026-08-24
 
--- Enable foreign keys
-PRAGMA foreign_keys = ON;
+-- Enable required extensions
+CREATE EXTENSION IF NOT EXISTS "uuid-ossp";
 
--- Models table: tracks loaded models and their configurations
+-- Create models table
 CREATE TABLE IF NOT EXISTS models (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    model_id TEXT NOT NULL,
-    revision TEXT DEFAULT 'main',
-    quantization TEXT,
-    max_gpu_memory_gb REAL DEFAULT 0,
-    max_cpu_memory_gb REAL DEFAULT 28,
-    max_disk_memory_gb REAL DEFAULT 50,
-    total_params BIGINT,
-    active_params BIGINT,
-    num_experts INTEGER,
-    experts_per_token INTEGER,
-    num_layers INTEGER,
-    max_context_length INTEGER,
-    architecture TEXT,
-    load_time_seconds REAL,
-    status TEXT DEFAULT 'unloaded',
-    error_message TEXT,
-    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-);
-
-CREATE INDEX IF NOT EXISTS idx_models_status ON models(status);
-CREATE INDEX IF NOT EXISTS idx_models_model_id ON models(model_id);
-
--- Generation requests table: tracks all inference requests
-CREATE TABLE IF NOT EXISTS generations (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    model_id INTEGER REFERENCES models(id) ON DELETE SET NULL,
-    prompt TEXT NOT NULL,
-    max_tokens INTEGER DEFAULT 512,
-    temperature REAL DEFAULT 0.7,
-    top_p REAL DEFAULT 0.9,
-    top_k INTEGER DEFAULT 50,
-    repetition_penalty REAL DEFAULT 1.1,
-    stream BOOLEAN DEFAULT 1,
-    output_text TEXT,
-    token_count INTEGER DEFAULT 0,
-    generation_time_seconds REAL,
-    tokens_per_second REAL,
-    status TEXT DEFAULT 'pending',
-    error_message TEXT,
-    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    completed_at TIMESTAMP
-);
-
-CREATE INDEX IF NOT EXISTS idx_generations_model_id ON generations(model_id);
-CREATE INDEX IF NOT EXISTS idx_generations_status ON generations(status);
-CREATE INDEX IF NOT EXISTS idx_generations_created_at ON generations(created_at);
-
--- Benchmarks table: stores performance benchmarks
-CREATE TABLE IF NOT EXISTS benchmarks (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    model_id INTEGER REFERENCES models(id) ON DELETE SET NULL,
-    prompt_tokens INTEGER,
-    completion_tokens INTEGER,
-    total_tokens INTEGER,
-    time_to_first_token_ms REAL,
-    tokens_per_second REAL,
-    peak_memory_gb REAL,
-    avg_memory_gb REAL,
-    cpu_percent REAL,
-    gpu_percent REAL,
-    config_json TEXT,
-    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-);
-
-CREATE INDEX IF NOT EXISTS idx_benchmarks_model_id ON benchmarks(model_id);
-CREATE INDEX IF NOT EXISTS idx_benchmarks_created_at ON benchmarks(created_at);
-
--- System metrics table: time-series system resource usage
-CREATE TABLE IF NOT EXISTS system_metrics (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    cpu_percent REAL,
-    ram_used_gb REAL,
-    ram_total_gb REAL,
-    gpu_percent REAL,
-    gpu_memory_used_gb REAL,
-    gpu_memory_total_gb REAL,
-    disk_used_gb REAL,
-    disk_total_gb REAL,
-    active_experts INTEGER,
-    offloaded_layers INTEGER
-);
-
-CREATE INDEX IF NOT EXISTS idx_system_metrics_timestamp ON system_metrics(timestamp);
-
--- Model layers table: tracks layer offloading status for MoE models
-CREATE TABLE IF NOT EXISTS model_layers (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    model_id INTEGER REFERENCES models(id) ON DELETE CASCADE,
-    layer_index INTEGER NOT NULL,
-    layer_type TEXT NOT NULL, -- 'attention', 'mlp', 'moe', 'norm', 'embedding'
+    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    name VARCHAR(255) NOT NULL,
+    path VARCHAR(512) NOT NULL UNIQUE,
+    size BIGINT NOT NULL,
+    format VARCHAR(50) NOT NULL,
+    quantization_level INTEGER DEFAULT 0,
+    parameters_total NUMERIC(20,2),
+    parameters_active NUMERIC(20,2),
     expert_count INTEGER DEFAULT 0,
-    active_experts INTEGER DEFAULT 0,
-    memory_gb REAL,
-    device TEXT, -- 'cuda', 'cpu', 'disk'
-    offloaded BOOLEAN DEFAULT 0,
-    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    UNIQUE(model_id, layer_index)
+    status VARCHAR(50) DEFAULT 'available',
+    checksum VARCHAR(64),
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+    last_used_at TIMESTAMP WITH TIME ZONE
 );
 
-CREATE INDEX IF NOT EXISTS idx_model_layers_model_id ON model_layers(model_id);
-CREATE INDEX IF NOT EXISTS idx_model_layers_device ON model_layers(device);
-
--- Expert activation logs: tracks which experts are activated per token
-CREATE TABLE IF NOT EXISTS expert_activations (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    model_id INTEGER REFERENCES models(id) ON DELETE CASCADE,
-    generation_id INTEGER REFERENCES generations(id) ON DELETE CASCADE,
-    layer_index INTEGER NOT NULL,
-    token_position INTEGER NOT NULL,
-    expert_indices TEXT NOT NULL, -- JSON array of expert indices
-    router_logits TEXT, -- JSON array of router logits
-    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+-- Create sessions table
+CREATE TABLE IF NOT EXISTS sessions (
+    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    user_id VARCHAR(255),
+    model_id UUID REFERENCES models(id) ON DELETE SET NULL,
+    name VARCHAR(255),
+    status VARCHAR(50) DEFAULT 'active',
+    temperature REAL DEFAULT 0.7,
+    max_tokens INTEGER DEFAULT 2048,
+    top_p REAL DEFAULT 0.95,
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+    started_at TIMESTAMP WITH TIME ZONE,
+    completed_at TIMESTAMP WITH TIME ZONE,
+    total_tokens INTEGER DEFAULT 0,
+    prompt_tokens INTEGER DEFAULT 0,
+    completion_tokens INTEGER DEFAULT 0,
+    metadata JSONB DEFAULT '{}'
 );
 
-CREATE INDEX IF NOT EXISTS idx_expert_activations_model_id ON expert_activations(model_id);
-CREATE INDEX IF NOT EXISTS idx_expert_activations_generation_id ON expert_activations(generation_id);
-CREATE INDEX IF NOT EXISTS idx_expert_activations_layer ON expert_activations(layer_index);
-
--- Configuration audit log
-CREATE TABLE IF NOT EXISTS config_audit (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    key TEXT NOT NULL,
-    old_value TEXT,
-    new_value TEXT,
-    changed_by TEXT DEFAULT 'system',
-    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+-- Create messages table
+CREATE TABLE IF NOT EXISTS messages (
+    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    session_id UUID REFERENCES sessions(id) ON DELETE CASCADE,
+    role VARCHAR(50) NOT NULL CHECK (role IN ('user', 'assistant', 'system')),
+    content TEXT NOT NULL,
+    tokens INTEGER,
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+    order_index INTEGER
 );
 
-CREATE INDEX IF NOT EXISTS idx_config_audit_key ON config_audit(key);
-CREATE INDEX IF NOT EXISTS idx_config_audit_created_at ON config_audit(created_at);
+-- Create inference metrics table
+CREATE TABLE IF NOT EXISTS inference_metrics (
+    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    session_id UUID REFERENCES sessions(id) ON DELETE CASCADE,
+    timestamp TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+    tokens_per_second REAL,
+    time_to_first_token_ms INTEGER,
+    total_inference_time_ms INTEGER,
+    memory_usage_mb REAL,
+    cpu_usage_percent REAL,
+    gpu_usage_percent REAL,
+    batch_size INTEGER,
+    context_window INTEGER,
+    expert_activation_ratio REAL
+);
 
--- Trigger to update updated_at timestamp
-CREATE TRIGGER IF NOT EXISTS update_models_timestamp
-AFTER UPDATE ON models
-BEGIN
-    UPDATE models SET updated_at = CURRENT_TIMESTAMP WHERE id = NEW.id;
-END;
+-- Create system settings table
+CREATE TABLE IF NOT EXISTS system_settings (
+    id INTEGER PRIMARY KEY CHECK (id = 1),
+    setting_key VARCHAR(100) NOT NULL UNIQUE,
+    setting_value JSONB NOT NULL,
+    updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+);
 
--- View for model performance summary
-CREATE VIEW IF NOT EXISTS model_performance AS
-SELECT
-    m.id,
-    m.model_id,
-    m.quantization,
-    m.total_params,
-    m.active_params,
-    COUNT(g.id) as total_generations,
-    AVG(g.tokens_per_second) as avg_tokens_per_second,
-    AVG(g.generation_time_seconds) as avg_generation_time,
-    MAX(g.tokens_per_second) as max_tokens_per_second,
-    MIN(g.generation_time_seconds) as min_generation_time
-FROM models m
-LEFT JOIN generations g ON m.id = g.model_id AND g.status = 'completed'
-GROUP BY m.id;
+-- Create indexes for performance
+CREATE INDEX IF NOT EXISTS idx_models_status ON models(status);
+CREATE INDEX IF NOT EXISTS idx_sessions_user ON sessions(user_id);
+CREATE INDEX IF NOT EXISTS idx_sessions_status ON sessions(status);
+CREATE INDEX IF NOT EXISTS idx_messages_session ON messages(session_id);
+CREATE INDEX IF NOT EXISTS idx_messages_created ON messages(created_at);
+CREATE INDEX IF NOT EXISTS idx_metrics_session ON inference_metrics(session_id);
+CREATE INDEX IF NOT EXISTS idx_metrics_timestamp ON inference_metrics(timestamp);
 
--- View for recent system health
-CREATE VIEW IF NOT EXISTS recent_system_health AS
-SELECT
-    datetime(timestamp) as time,
-    cpu_percent,
-    ram_used_gb,
-    ram_total_gb,
-    gpu_percent,
-    gpu_memory_used_gb,
-    gpu_memory_total_gb,
-    active_experts,
-    offloaded_layers
-FROM system_metrics
-WHERE timestamp > datetime('now', '-1 hour')
-ORDER BY timestamp DESC
-LIMIT 100;
+-- Insert default system settings
+INSERT INTO system_settings (id, setting_key, setting_value)
+VALUES 
+    (1, '{"max_concurrent_sessions": 10}', '{"default_temperature": 0.7, "max_context_length": 32768, "batch_size": 4}');
+
+-- Add comments for documentation
+COMMENT ON TABLE models IS 'Model registry and metadata storage';
+COMMENT ON TABLE sessions IS 'Chat conversation sessions';
+COMMENT ON TABLE messages IS 'Individual chat messages within sessions';
+COMMENT ON TABLE inference_metrics IS 'Performance metrics for inference runs';
+COMMENT ON TABLE system_settings IS 'Global system configuration';
