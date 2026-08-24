@@ -4,7 +4,7 @@
     "module": "ESNext",
     "moduleResolution": "bundler",
     "lib": ["ES2022", "DOM", "DOM.Iterable"],
-    "jsx": "vue-jsx",
+    "jsx": "preserve",
     "strict": true,
     "skipLibCheck": true,
     "esModuleInterop": true,
@@ -19,6 +19,6 @@
     },
     "types": ["node", "vite/client"]
   },
-  "include": ["ui/**/*.ts", "ui/**/*.vue", "ui/**/*.d.ts"],
+  "include": ["ui/**/*.ts", "ui/**/*.vue", "ui/**/*.d.ts", "tests/**/*.ts"],
   "exclude": ["node_modules", "dist"]
 }
