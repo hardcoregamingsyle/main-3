@@ -4,11 +4,30 @@
   "description": "Ultra-memory-efficient MoE inference engine for running 2.4T parameter models on consumer hardware",
   "private": true,
   "scripts": {
-    "dev": "python -m api.main",
-    "build": "echo 'Python project - no build step needed'",
-    "test": "pytest tests/",
-    "lint": "ruff check . && mypy .",
-    "format": "ruff format ."
+    "dev": "vite",
+    "build": "vite build",
+    "preview": "vite preview",
+    "lint": "eslint . --ext .vue,.js,.ts,.jsx,.tsx",
+    "format": "prettier --write .",
+    "typecheck": "vue-tsc --noEmit"
+  },
+  "dependencies": {
+    "vue": "^3.4.0",
+    "vue-router": "^4.2.0",
+    "pinia": "^2.1.0",
+    "axios": "^1.6.0"
+  },
+  "devDependencies": {
+    "@types/node": "^20.10.0",
+    "@vitejs/plugin-vue": "^5.0.0",
+    "@vue/tsconfig": "^0.5.0",
+    "typescript": "^5.3.0",
+    "vite": "^5.0.0",
+    "vue-tsc": "^1.8.0",
+    "eslint": "^8.56.0",
+    "@vue/eslint-config-typescript": "^12.0.0",
+    "prettier": "^3.2.0",
+    "@vue/eslint-config-prettier": "^9.0.0"
   },
   "keywords": [
     "moe",
@@ -20,10 +39,6 @@
   ],
   "author": "Thalamus Code Project",
   "license": "MIT",
-  "devDependencies": {
-    "@types/node": "^20.10.0",
-    "typescript": "^5.3.0"
-  },
   "engines": {
     "node": ">=20.0.0"
   }
