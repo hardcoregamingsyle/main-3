@@ -1,0 +1,30 @@
+{
+  "name": "moe-ultra-engine",
+  "version": "1.0.0",
+  "description": "Ultra-memory-efficient MoE inference engine for running 2.4T parameter models on consumer hardware",
+  "private": true,
+  "scripts": {
+    "dev": "python -m api.main",
+    "build": "echo 'Python project - no build step needed'",
+    "test": "pytest tests/",
+    "lint": "ruff check . && mypy .",
+    "format": "ruff format ."
+  },
+  "keywords": [
+    "moe",
+    "inference",
+    "llm",
+    "airllm",
+    "quantization",
+    "offloading"
+  ],
+  "author": "Thalamus Code Project",
+  "license": "MIT",
+  "devDependencies": {
+    "@types/node": "^20.10.0",
+    "typescript": "^5.3.0"
+  },
+  "engines": {
+    "node": ">=20.0.0"
+  }
+}
