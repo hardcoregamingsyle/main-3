@@ -1,82 +1,118 @@
-# Stage 1: Builder for Python Dependencies
-FROM python:3.11-slim AS builder
+# ================================================================
+# MoE Ultra Engine - Production Dockerfile
+# Multi-stage build for optimized image size and security
+# ================================================================
+# Build arg for Python version (default: 3.11)
+ARG PYTHON_VERSION=3.11
 
-WORKDIR /app
+# =================================================================
+# STAGE 1: Builder Stage
+# =================================================================
+FROM python:${PYTHON_VERSION}-slim AS builder
 
-# Install build dependencies
-RUN apt-get update && apt-get install -y --no-install-recommends \
-    build-essential \
-    libpq-dev \
-    curl \
+# Set environment variables
+ENV PYTHONDONTWRITEBYTECODE=1 \\
+    PYTHONUNBUFFERED=1 \\
+    PIP_NO_CACHE_DIR=1 \\
+    PIP_DISABLE_PIP_VERSION_CHECK=1
+
+# Install system dependencies for building
+RUN apt-get update && apt-get install -y --no-install-recommends \\
+    build-essential \\
+    curl \\
+    git \\
     && rm -rf /var/lib/apt/lists/*
 
-# Copy dependency files
-COPY pyproject.toml README.md ./
-COPY requirements.txt ./ 2>/dev/null || true
+# Create non-root user for security
+RUN useradd --create-home --shell /bin/bash appuser
 
-# Install Python dependencies
-RUN pip install --upgrade pip && \
-    pip install --no-cache-dir --user -e .[dev,ml]
-
-# Stage 2: Frontend Build
-FROM node:20-alpine AS frontend-builder
-
-WORKDIR /ui
-
-# Copy frontend files
-COPY ui/package*.json ./
-RUN npm ci
-
-COPY ui/ ./
-RUN npm run build
-
-# Stage 3: Runtime Image
-FROM python:3.11-slim AS runner
-
+# Set working directory
 WORKDIR /app
 
-# Labels for OCI standards
-LABEL org.opencontainers.image.source="https://github.com/thalamus-project/moe-ultra-engine"
-LABEL org.opencontainers.image.description="Ultra-memory-efficient MoE inference engine"
-LABEL org.opencontainers.image.version="1.0.0"
+# Copy and install dependencies
+COPY requirements.txt .
+COPY requirements-dev.txt .
+
+# Install Python dependencies into virtual environment
+RUN python -m venv /opt/venv
+ENV PATH="/opt/venv/bin:$PATH"
+
+# Install only production dependencies
+RUN pip install --upgrade pip setuptools wheel && \\
+    pip install --no-cache-dir -r requirements.txt
+
+# =================================================================
+# STAGE 2: Production Stage
+# =================================================================
+FROM python:${PYTHON_VERSION}-slim AS production
+
+# Labels for container metadata
+LABEL maintainer="Engineering Team <engineering@thalamus.ai>"
+LABEL version="1.0.0"
+LABEL description="MoE Ultra Engine - Ultra-memory-efficient inference engine"
+
+# Set environment variables
+ENV PYTHONDONTWRITEBYTECODE=1 \\
+    PYTHONUNBUFFERED=1 \\
+    APP_HOME=/app \\
+    PORT=8000 \\
+    HOST=0.0.0.0
+
+# Install minimal runtime dependencies
+RUN apt-get update && apt-get install -y --no-install-recommends \\
+    libgomp1 \\
+    libgl1-mesa-glx \\
+    libglib2.0-0 \\
+    && rm -rf /var/lib/apt/lists/* \\
+    && apt-get clean
 
 # Create non-root user
-RUN groupadd -r moeuser && useradd -r -g moeuser moeuser
+RUN groupadd -r appgroup && useradd -r -g appgroup appuser
 
-# Install runtime dependencies only
-RUN apt-get update && apt-get install -y --no-install-recommends \
-    libpq5 \
-    gosu \
-    procps \
-    && rm -rf /var/lib/apt/lists/*
+# Set working directory
+WORKDIR $APP_HOME
 
-# Copy installed packages from builder
-COPY --from=builder /root/.local /home/moeuser/.local
-ENV PATH=/home/moeuser/.local/bin:$PATH
-
-# Copy frontend build
-COPY --from=frontend-builder /ui/dist /app/ui/dist
+# Copy virtual environment from builder
+COPY --from=builder /opt/venv /opt/venv
+ENV PATH="/opt/venv/bin:$PATH"
 
 # Copy application code
-COPY --chown=moeuser:moeuser api/ /app/api/
-COPY --chown=moeuser:moeuser core/ /app/core/
-COPY --chown=moeuser:moeuser db/ /app/db/
-COPY --chown=moeuser:moeuser config/ /app/config/
-COPY --chown=moeuser:moeuser scripts/ /app/scripts/
-COPY --chown=moeuser:moeuser tests/ /app/tests/
-COPY --chown=moeuser:moeuser .env.example /app/.env.example
-COPY --chown=moeuser:moeuser README.md /app/README.md
+COPY --chown=appuser:appgroup api/ ./api/
+COPY --chown=appuser:appgroup core/ ./core/
+COPY --chown=appuser:appgroup config/ ./config/
+COPY --chown=appuser:appgroup scripts/ ./scripts/
+COPY --chown=appuser:appgroup db/ ./db/
+COPY --chown=appuser:appgroup pyproject.toml .
+COPY --chown=appuser:appgroup README.md .
 
-# Set permissions
-RUN chown -R moeuser:moeuser /app
-USER moeuser
+# Create necessary directories
+RUN mkdir -p logs data models && \\
+    chown -R appuser:appgroup $APP_HOME
 
-# Expose ports
-EXPOSE 8000 9090
+# Switch to non-root user
+USER appuser
+
+# Expose port
+EXPOSE ${PORT}
 
 # Health check
-HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
-    CMD curl -f http://localhost:8000/health || exit 1
+HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \\
+    CMD curl -f http://localhost:${PORT}/health || exit 1
 
-# Default command
-CMD ["sh", "-c", "uvicorn api.main:app --host 0.0.0.0 --port 8000 --workers $WORKERS_COUNT"]
+# Default command - run the API server
+CMD ["uvicorn", "api.main:app", "--host", "${HOST}", "--port", "${PORT}", "--workers", "4"]
+
+# =================================================================
+# Alternative: Development Dockerfile (uncomment if needed)
+# =================================================================
+# FROM python:${PYTHON_VERSION}-slim AS development
+# ENV PYTHONDONTWRITEBYTECODE=1 PYTHONUNBUFFERED=1
+# RUN apt-get update && apt-get install -y build-essential curl git && rm -rf /var/lib/apt/lists/*
+# WORKDIR /app
+# COPY requirements.txt .
+# RUN pip install --no-cache-dir -r requirements.txt -r requirements-dev.txt
+# COPY . .
+# USER root
+# CMD ["bash"]
+
+# End of Dockerfile

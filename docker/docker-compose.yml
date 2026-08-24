@@ -1,173 +1,174 @@
-version: '3.9'
+# ================================================================
+# MoE Ultra Engine - Docker Compose Configuration
+# Local development and production orchestration
+# ================================================================
+
+version: "3.9"
 
 services:
-  api:
+  # ----------------------------------------------------------------
+  # Main Application Service
+  # ----------------------------------------------------------------
+  app:
     build:
       context: ..
       dockerfile: docker/Dockerfile
-    container_name: moe-ultra-api
+      target: production
+    container_name: moe-ultra-app
+    restart: unless-stopped
     ports:
-      - "${API_PORT:-8000}:8000"
-    environment:
-      - ENVIRONMENT=${ENVIRONMENT:-development}
-      - DATABASE_URL=postgresql://thalamus:thalamus@db:5432/thalamus
-      - REDIS_URL=redis://redis:6379/0
-      - MODEL_PATH=/models
-      - API_KEY=${API_KEY:-dev-key-change-in-production}
-      - LOG_LEVEL=${LOG_LEVEL:-INFO}
+      - "8000:8000"
     volumes:
-      - ../models:/models:ro
-      - ../logs:/app/logs
+      # Mount persistent data directories
+      - ../data:/app/data:rw
+      - ../logs:/app/logs:rw
+      - ../models:/app/models:ro
+    environment:
+      - ENVIRONMENT=${ENVIRONMENT:-production}
+      - HOST=0.0.0.0
+      - PORT=8000
+      - WORKERS=4
+      - DATABASE_URL=sqlite:////app/data/conversations.db
+      - LOG_LEVEL=${LOG_LEVEL:-INFO}
+    env_file:
+      - ../.env
     depends_on:
-      db:
-        condition: service_healthy
       redis:
-        condition: service_started
+        condition: service_healthy
     networks:
-      - thalamus-network
+      - moe-network
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
       interval: 30s
       timeout: 10s
       retries: 3
-      start_period: 60s
+      start_period: 10s
     deploy:
       resources:
         limits:
-          memory: 4G
+          memory: 32G
+          cpus: '8'
         reservations:
-          memory: 2G
-
-  worker:
-    build:
-      context: ..
-      dockerfile: docker/Dockerfile
-    container_name: moe-ultra-worker
-    command: python -m core.worker --workers=4
-    environment:
-      - ENVIRONMENT=${ENVIRONMENT:-development}
-      - DATABASE_URL=postgresql://thalamus:thalamus@db:5432/thalamus
-      - REDIS_URL=redis://redis:6379/0
-      - MODEL_PATH=/models
-      - WORKER_CONCURRENCY=${WORKER_CONCURRENCY:-4}
-    volumes:
-      - ../models:/models:ro
-      - ../logs:/app/logs
-    depends_on:
-      db:
-        condition: service_healthy
-      redis:
-        condition: service_started
-    networks:
-      - thalamus-network
-    deploy:
-      resources:
-        limits:
-          memory: 8G
+          memory: 16G
           cpus: '4'
-        reservations:
-          memory: 4G
 
-  db:
-    image: postgres:15-alpine
-    container_name: moe-ultra-db
-    environment:
-      - POSTGRES_USER=thalamus
-      - POSTGRES_PASSWORD=thalamus
-      - POSTGRES_DB=thalamus
-    volumes:
-      - postgres_data:/var/lib/postgresql/data
-      - ../db/migrations:/docker-entrypoint-initdb.d:ro
-    ports:
-      - "${DB_PORT:-5432}:5432"
-    networks:
-      - thalamus-network
-    healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U thalamus -d thalamus"]
-      interval: 10s
-      timeout: 5s
-      retries: 5
-    deploy:
-      resources:
-        limits:
-          memory: 2G
-        reservations:
-          memory: 1G
-
+  # ----------------------------------------------------------------
+  # Redis Cache Service
+  # ----------------------------------------------------------------
   redis:
     image: redis:7-alpine
     container_name: moe-ultra-redis
-    command: redis-server --appendonly yes --maxmemory 1gb --maxmemory-policy allkeys-lru
-    volumes:
-      - redis_data:/data
+    restart: unless-stopped
     ports:
-      - "${REDIS_PORT:-6379}:6379"
+      - "6379:6379"
+    volumes:
+      - redis-data:/data
+    command: redis-server --appendonly yes --maxmemory 2gb --maxmemory-policy allkeys-lru
     networks:
-      - thalamus-network
+      - moe-network
     healthcheck:
       test: ["CMD", "redis-cli", "ping"]
       interval: 10s
       timeout: 5s
       retries: 5
-    deploy:
-      resources:
-        limits:
-          memory: 1G
-        reservations:
-          memory: 512M
 
+  # ----------------------------------------------------------------
+  # Prometheus Metrics Service
+  # ----------------------------------------------------------------
   prometheus:
-    image: prom/prometheus:v2.47.0
+    image: prom/prometheus:v2.48.0
     container_name: moe-ultra-prometheus
+    restart: unless-stopped
+    ports:
+      - "9090:9090"
     volumes:
       - ./prometheus.yml:/etc/prometheus/prometheus.yml:ro
-      - prometheus_data:/prometheus
-    ports:
-      - "${PROMETHEUS_PORT:-9090}:9090"
+      - prometheus-data:/prometheus
+    command:
+      - '--config.file=/etc/prometheus/prometheus.yml'
+      - '--storage.tsdb.path=/prometheus'
+      - '--web.enable-lifecycle'
     networks:
-      - thalamus-network
-    depends_on:
-      - api
-    deploy:
-      resources:
-        limits:
-          memory: 1G
-        reservations:
-          memory: 512M
+      - moe-network
+    profiles:
+      - monitoring
 
+  # ----------------------------------------------------------------
+  # Grafana Visualization Service
+  # ----------------------------------------------------------------
   grafana:
-    image: grafana/grafana:10.1.0
+    image: grafana/grafana:10.2.0
     container_name: moe-ultra-grafana
-    environment:
-      - GF_SECURITY_ADMIN_USER=${GRAFANA_USER:-admin}
-      - GF_SECURITY_ADMIN_PASSWORD=${GRAFANA_PASSWORD:-admin}
-    volumes:
-      - grafana_data:/var/lib/grafana
-      - ./grafana-datasources.yml:/etc/grafana/provisioning/datasources/datasources.yml:ro
+    restart: unless-stopped
     ports:
-      - "${GRAFANA_PORT:-3000}:3000"
+      - "3000:3000"
+    volumes:
+      - ./grafana-datasources.yml:/etc/grafana/provisioning/datasources/datasources.yml:ro
+      - grafana-data:/var/lib/grafana
+    environment:
+      - GF_SECURITY_ADMIN_USER=admin
+      - GF_SECURITY_ADMIN_PASSWORD=changeme
+      - GF_USERS_ALLOW_SIGN_UP=false
     networks:
-      - thalamus-network
+      - moe-network
     depends_on:
       - prometheus
-    deploy:
-      resources:
-        limits:
-          memory: 1G
-        reservations:
-          memory: 256M
+    profiles:
+      - monitoring
+
+  # ----------------------------------------------------------------
+  # Development Helper Service (optional)
+  # ----------------------------------------------------------------
+  dev:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile
+      target: production
+    container_name: moe-ultra-dev
+    volumes:
+      - ../:/app:rw
+    environment:
+      - ENVIRONMENT=development
+      - DEBUG=true
+    working_dir: /app
+    entrypoint: ["/bin/bash"]
+    stdin_open: true
+    tty: true
+    networks:
+      - moe-network
+    profiles:
+      - dev
 
 networks:
-  thalamus-network:
+  moe-network:
     driver: bridge
     name: moe-ultra-network
 
 volumes:
-  postgres_data:
+  redis-data:
     driver: local
-  redis_data:
+  prometheus-data:
     driver: local
-  prometheus_data:
+  grafana-data:
     driver: local
-  grafana_data:
-    driver: local
+
+# ================================================================
+# Usage Instructions:
+#
+# Production (with monitoring):
+#   docker-compose -f docker/docker-compose.yml --profile monitoring up -d
+#
+# Development:
+#   docker-compose -f docker/docker-compose.yml --profile dev up
+#
+# View logs:
+#   docker-compose -f docker/docker-compose.yml logs -f app
+#
+# Stop all services:
+#   docker-compose -f docker/docker-compose.yml down
+#
+# Rebuild after code changes:
+#   docker-compose -f docker/docker-compose.yml build --no-cache app
+# ================================================================
+
+# End of docker-compose.yml
