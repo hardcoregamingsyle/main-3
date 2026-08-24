@@ -15,7 +15,7 @@
     "noEmit": true,
     "baseUrl": ".",
     "paths": {
-      "@/*": ["ui/*"],
+      "@/*": ["ui/src/*"],
       "@components/*": ["ui/src/components/*"],
       "@utils/*": ["ui/src/utils/*"],
       "@store/*": ["ui/src/store/*"]
@@ -25,27 +25,8 @@
     "noUnusedParameters": true,
     "noImplicitReturns": true,
     "noFallthroughCasesInSwitch": true,
-    "exactOptionalPropertyTypes": true,
-    "noUncheckedIndexedAccess": true,
-    "declarationMap": false,
-    "sourceMap": true
+    "exactOptionalPropertyTypes": true
   },
-  "include": [
-    "ui/**/*.ts",
-    "ui/**/*.vue",
-    "ui/**/*.d.ts",
-    "tests/**/*.ts",
-    "vite.config.ts"
-  ],
-  "exclude": [
-    "node_modules",
-    "dist",
-    "build",
-    "coverage",
-    "ui/static/js/api.js"
-  ],
-  "vueCompilerOptions": {
-    "target": 3.4,
-    "strictTemplates": true
-  }
+  "include": ["ui/src/**/*.ts", "ui/src/**/*.d.ts", "ui/src/**/*.vue", "vite.config.ts"],
+  "exclude": ["node_modules", "dist", "tests", "core", "api", "scripts"]
 }
