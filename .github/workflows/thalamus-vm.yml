@@ -1,0 +1,77 @@
+# Managed by Thalamus. Persistent VM worker — polls for queued commands.
+name: Thalamus VM
+
+on:
+  workflow_dispatch:
+    inputs:
+      branch_id:
+        description: Convex branch id
+        required: true
+      vm_nonce:
+        description: One-time token proving this worker is ours
+        required: true
+      callback_base:
+        description: Convex site base URL
+        required: true
+      os:
+        description: Runner to execute on
+        required: false
+        default: ubuntu-latest
+      branch:
+        description: Git branch to track and re-sync against
+        required: true
+
+jobs:
+  vm:
+    runs-on: ${{ inputs.os || 'ubuntu-latest' }}
+    timeout-minutes: 350
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.branch }}
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Worker loop
+        shell: bash
+        env:
+          BRANCH_ID: ${{ inputs.branch_id }}
+          VM_NONCE: ${{ inputs.vm_nonce }}
+          CALLBACK_BASE: ${{ inputs.callback_base }}
+          BRANCH_REF: ${{ inputs.branch }}
+        run: |
+          set +e
+          echo "[vm] worker started for branch $BRANCH_REF"
+          while true; do
+            RESP=$(curl -sS -X POST "$CALLBACK_BASE/code/vm-poll" \
+              -H 'Content-Type: application/json' \
+              -d "{\"branchId\":\"$BRANCH_ID\",\"vmNonce\":\"$VM_NONCE\"}")
+            ALIVE=$(echo "$RESP" | jq -r '.keepAlive // false')
+            if [ "$ALIVE" != "true" ]; then
+              echo "[vm] idle deadline reached — shutting down"
+              break
+            fi
+            N=$(echo "$RESP" | jq '.commands | length')
+            if [ "$N" -gt 0 ]; then
+              git fetch origin "+refs/heads/$BRANCH_REF:refs/remotes/origin/$BRANCH_REF" --quiet 2>/dev/null || git fetch origin --quiet 2>/dev/null
+              git checkout -B "$BRANCH_REF" "origin/$BRANCH_REF" --quiet 2>/dev/null || true
+              echo "$RESP" | jq -c '.commands[]' | while IFS= read -r C; do
+                ID=$(echo "$C" | jq -r '.id')
+                NONCE=$(echo "$C" | jq -r '.nonce')
+                CMD=$(echo "$C" | jq -r '.command')
+                echo "[vm] run: $CMD"
+                OUTPUT=$(bash -lc "$CMD" 2>&1)
+                CODE=$?
+                printf '%s' "$OUTPUT" | head -c 20000 > "$RUNNER_TEMP/vm-out.txt"
+                PAYLOAD=$(jq -n --arg id "$ID" --arg nonce "$NONCE" \
+                  --arg out "$(cat "$RUNNER_TEMP/vm-out.txt")" \
+                  --argjson code "$CODE" \
+                  '{commandId:$id, nonce:$nonce, output:$out, exitCode:$code}')
+                curl -sS -X POST "$CALLBACK_BASE/code/command-result" \
+                  -H 'Content-Type: application/json' -d "$PAYLOAD" > /dev/null
+              done
+            fi
+            sleep 10
+          done
+          echo "[vm] worker done"
