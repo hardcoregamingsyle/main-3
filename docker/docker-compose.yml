@@ -1,98 +1,173 @@
-version: '3.8'
+version: '3.9'
 
 services:
-  moe-engine:
+  api:
     build:
       context: ..
       dockerfile: docker/Dockerfile
-      target: runtime
-    image: moe-ultra-engine:latest
-    container_name: moe-ultra-engine
-    restart: unless-stopped
+    container_name: moe-ultra-api
+    ports:
+      - "${API_PORT:-8000}:8000"
+    environment:
+      - ENVIRONMENT=${ENVIRONMENT:-development}
+      - DATABASE_URL=postgresql://thalamus:thalamus@db:5432/thalamus
+      - REDIS_URL=redis://redis:6379/0
+      - MODEL_PATH=/models
+      - API_KEY=${API_KEY:-dev-key-change-in-production}
+      - LOG_LEVEL=${LOG_LEVEL:-INFO}
+    volumes:
+      - ../models:/models:ro
+      - ../logs:/app/logs
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_started
+    networks:
+      - thalamus-network
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 60s
     deploy:
       resources:
+        limits:
+          memory: 4G
         reservations:
-          devices:
-            - driver: nvidia
-              count: 1
-              capabilities: [gpu]
+          memory: 2G
+
+  worker:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile
+    container_name: moe-ultra-worker
+    command: python -m core.worker --workers=4
     environment:
-      - MODEL_ID=${MODEL_ID:-Qwen/Qwen1.5-MoE-A2.7B}
-      - MODEL_REVISION=${MODEL_REVISION:-main}
-      - HF_TOKEN=${HF_TOKEN}
-      - MAX_GPU_MEMORY_GB=${MAX_GPU_MEMORY_GB:-6}
-      - MAX_CPU_MEMORY_GB=${MAX_CPU_MEMORY_GB:-32}
-      - MAX_DISK_MEMORY_GB=${MAX_DISK_MEMORY_GB:-100}
-      - OFFLOAD_STRATEGY=${OFFLOAD_STRATEGY:-expert_aware}
-      - QUANTIZATION=${QUANTIZATION:-int4}
-      - LOG_LEVEL=${LOG_LEVEL:-WARNING}
-      - PYTHONPATH=/app
+      - ENVIRONMENT=${ENVIRONMENT:-development}
+      - DATABASE_URL=postgresql://thalamus:thalamus@db:5432/thalamus
+      - REDIS_URL=redis://redis:6379/0
+      - MODEL_PATH=/models
+      - WORKER_CONCURRENCY=${WORKER_CONCURRENCY:-4}
     volumes:
-      - moe-cache:/var/cache/moe-ultra-engine
-      - moe-logs:/var/log/moe-engine
-      - ./config/prod.yaml:/app/config/prod.yaml:ro
+      - ../models:/models:ro
+      - ../logs:/app/logs
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_started
+    networks:
+      - thalamus-network
+    deploy:
+      resources:
+        limits:
+          memory: 8G
+          cpus: '4'
+        reservations:
+          memory: 4G
+
+  db:
+    image: postgres:15-alpine
+    container_name: moe-ultra-db
+    environment:
+      - POSTGRES_USER=thalamus
+      - POSTGRES_PASSWORD=thalamus
+      - POSTGRES_DB=thalamus
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ../db/migrations:/docker-entrypoint-initdb.d:ro
     ports:
-      - "3000:3000"
-      - "9090:9090"
+      - "${DB_PORT:-5432}:5432"
+    networks:
+      - thalamus-network
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:3000/health"]
-      interval: 30s
-      timeout: 10s
-      retries: 3
-      start_period: 120s
-    logging:
-      driver: "json-file"
-      options:
-        max-size: "100m"
-        max-file: "5"
+      test: ["CMD-SHELL", "pg_isready -U thalamus -d thalamus"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    deploy:
+      resources:
+        limits:
+          memory: 2G
+        reservations:
+          memory: 1G
+
+  redis:
+    image: redis:7-alpine
+    container_name: moe-ultra-redis
+    command: redis-server --appendonly yes --maxmemory 1gb --maxmemory-policy allkeys-lru
+    volumes:
+      - redis_data:/data
+    ports:
+      - "${REDIS_PORT:-6379}:6379"
+    networks:
+      - thalamus-network
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    deploy:
+      resources:
+        limits:
+          memory: 1G
+        reservations:
+          memory: 512M
 
   prometheus:
-    image: prom/prometheus:v2.52.0
-    container_name: moe-prometheus
-    restart: unless-stopped
+    image: prom/prometheus:v2.47.0
+    container_name: moe-ultra-prometheus
     volumes:
       - ./prometheus.yml:/etc/prometheus/prometheus.yml:ro
-      - prometheus-data:/prometheus
+      - prometheus_data:/prometheus
     ports:
-      - "9091:9090"
-    command:
-      - '--config.file=/etc/prometheus/prometheus.yml'
-      - '--storage.tsdb.path=/prometheus'
-      - '--storage.tsdb.retention.time=30d'
-      - '--web.enable-lifecycle'
-    healthcheck:
-      test: ["CMD", "wget", "-q", "--spider", "http://localhost:9090/-"]
-      interval: 30s
-      timeout: 10s
-      retries: 3
+      - "${PROMETHEUS_PORT:-9090}:9090"
+    networks:
+      - thalamus-network
+    depends_on:
+      - api
+    deploy:
+      resources:
+        limits:
+          memory: 1G
+        reservations:
+          memory: 512M
 
   grafana:
-    image: grafana/grafana:10.4.0
-    container_name: moe-grafana
-    restart: unless-stopped
+    image: grafana/grafana:10.1.0
+    container_name: moe-ultra-grafana
     environment:
-      - GF_SECURITY_ADMIN_USER=admin
+      - GF_SECURITY_ADMIN_USER=${GRAFANA_USER:-admin}
       - GF_SECURITY_ADMIN_PASSWORD=${GRAFANA_PASSWORD:-admin}
-      - GF_USERS_ALLOW_SIGN_UP=false
     volumes:
+      - grafana_data:/var/lib/grafana
       - ./grafana-datasources.yml:/etc/grafana/provisioning/datasources/datasources.yml:ro
-      - grafana-data:/var/lib/grafana
     ports:
-      - "3001:3000"
+      - "${GRAFANA_PORT:-3000}:3000"
+    networks:
+      - thalamus-network
     depends_on:
       - prometheus
-    healthcheck:
-      test: ["CMD", "wget", "-q", "--spider", "http://localhost:3000/api/health"]
-      interval: 30s
-      timeout: 10s
-      retries: 3
-
-volumes:
-  moe-cache:
-  moe-logs:
-  prometheus-data:
-  grafana-data:
+    deploy:
+      resources:
+        limits:
+          memory: 1G
+        reservations:
+          memory: 256M
 
 networks:
-  default:
-    name: moe-network
+  thalamus-network:
+    driver: bridge
+    name: moe-ultra-network
+
+volumes:
+  postgres_data:
+    driver: local
+  redis_data:
+    driver: local
+  prometheus_data:
+    driver: local
+  grafana_data:
+    driver: local
