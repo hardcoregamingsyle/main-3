@@ -1,174 +1,281 @@
-# ================================================================
-# MoE Ultra Engine - Docker Compose Configuration
-# Local development and production orchestration
-# ================================================================
-
 version: "3.9"
 
+# =============================================================================
+# MoE Ultra Engine - Docker Compose Configuration
+# For ultra-memory-efficient MoE model inference on consumer hardware
+# Date: 2026-08-24
+# =============================================================================
+
+x-common-vars: &common-vars
+  APP_ENV: ${APP_ENV:-development}
+  DEBUG: ${DEBUG:-true}
+  LOG_LEVEL: ${LOG_LEVEL:-INFO}
+  SECRET_KEY: ${SECRET_KEY:-change-me-in-production-use-random-32-char-string}
+
+x-api-defaults: &api-defaults
+  MODEL_PATH: ${MODEL_PATH:-/models}
+  MAX_TOKENS: ${MAX_TOKENS:-4096}
+  TEMPERATURE: ${TEMPERATURE:-0.7}
+  TOP_P: ${TOP_P:-0.9}
+  DEVICE: ${DEVICE:-cpu}
+  LOAD_IN_8BIT: ${LOAD_IN_8BIT:-false}
+  LOAD_IN_4BIT: ${LOAD_IN_4BIT:-false}
+  GPU_MEMORY_FRACTION: ${GPU_MEMORY_FRACTION:-0.85}
+
 services:
-  # ----------------------------------------------------------------
-  # Main Application Service
-  # ----------------------------------------------------------------
-  app:
+  # ---------------------------------------------------------------------------
+  # API Service - FastAPI backend with MoE inference engine
+  # ---------------------------------------------------------------------------
+  api:
     build:
       context: ..
       dockerfile: docker/Dockerfile
-      target: production
-    container_name: moe-ultra-app
+      target: runtime
+      args:
+        PYTHON_VERSION: "3.11"
+        BUILD_TYPE: ${BUILD_TYPE:-release}
+    image: moe-ultra-api:latest
+    container_name: moe-ultra-api
     restart: unless-stopped
     ports:
-      - "8000:8000"
-    volumes:
-      # Mount persistent data directories
-      - ../data:/app/data:rw
-      - ../logs:/app/logs:rw
-      - ../models:/app/models:ro
+      - "${API_PORT:-8000}:8000"
     environment:
-      - ENVIRONMENT=${ENVIRONMENT:-production}
-      - HOST=0.0.0.0
-      - PORT=8000
-      - WORKERS=4
-      - DATABASE_URL=sqlite:////app/data/conversations.db
-      - LOG_LEVEL=${LOG_LEVEL:-INFO}
-    env_file:
-      - ../.env
+      <<: [*common-vars, *api-defaults]
+      DATABASE_URL: postgresql://${DB_USER:-postgres}:${DB_PASSWORD:-postgres}@db:5432/${DB_NAME:-moengine}
+      REDIS_URL: redis://redis:6379/0
+      PROMETHEUS_ENABLED: ${PROMETHEUS_ENABLED:-true}
+      CORS_ORIGINS: ${CORS_ORIGINS:-["http://localhost:5173","http://localhost:3000"]}
+    volumes:
+      - ../models:/models:ro
+      - ../logs:/app/logs
+      - model-cache:/model-cache
     depends_on:
+      db:
+        condition: service_healthy
       redis:
         condition: service_healthy
-    networks:
-      - moe-network
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
       interval: 30s
       timeout: 10s
-      retries: 3
-      start_period: 10s
+      retries: 5
+      start_period: 60s
+    networks:
+      - moe-network
     deploy:
       resources:
         limits:
-          memory: 32G
-          cpus: '8'
+          cpus: '${CPU_LIMIT:-4}'
+          memory: ${MEMORY_LIMIT:-8G}
         reservations:
-          memory: 16G
-          cpus: '4'
+          cpus: '${CPU_RESERVE:-2}'
+          memory: ${MEMORY_RESERVE:-4G}
+    # Security hardening
+    read_only: true
+    tmpfs:
+      - /tmp:size=100M
+      - /var/run:size=10M
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    cap_add:
+      - CHOWN
+      - SETUID
+      - SETGID
 
-  # ----------------------------------------------------------------
-  # Redis Cache Service
-  # ----------------------------------------------------------------
+  # ---------------------------------------------------------------------------
+  # Frontend Service - Vue 3 SPA served via Nginx
+  # ---------------------------------------------------------------------------
+  frontend:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile.frontend
+      target: production
+    image: moe-ultra-frontend:latest
+    container_name: moe-ultra-frontend
+    restart: unless-stopped
+    ports:
+      - "${FRONTEND_PORT:-3000}:80"
+    environment:
+      - VITE_API_BASE_URL=${VITE_API_BASE_URL:-http://localhost:8000}
+      - NODE_ENV=production
+    depends_on:
+      - api
+    networks:
+      - moe-network
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:80"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+    deploy:
+      resources:
+        limits:
+          cpus: '1'
+          memory: 512M
+        reservations:
+          cpus: '0.5'
+          memory: 256M
+
+  # ---------------------------------------------------------------------------
+  # PostgreSQL Database - Conversation storage and user data
+  # ---------------------------------------------------------------------------
+  db:
+    image: postgres:16-alpine
+    container_name: moe-ultra-db
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${DB_USER:-postgres}
+      POSTGRES_PASSWORD: ${DB_PASSWORD:-postgres}
+      POSTGRES_DB: ${DB_NAME:-moengine}
+      PGDATA: /var/lib/postgresql/data/pgdata
+    ports:
+      - "${DB_PORT:-5432}:5432"
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+      - ../db/init:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $$POSTGRES_USER -d $$POSTGRES_DB"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+    networks:
+      - moe-network
+    deploy:
+      resources:
+        limits:
+          cpus: '2'
+          memory: 2G
+        reservations:
+          cpus: '1'
+          memory: 1G
+    command: >-
+      postgres
+      -c shared_preload_libraries=pg_stat_statements
+      -c max_connections=200
+      -c work_mem=64MB
+      -c maintenance_work_mem=512MB
+      -c effective_cache_size=4GB
+
+  # ---------------------------------------------------------------------------
+  # Redis - Session storage, caching, and pub/sub messaging
+  # ---------------------------------------------------------------------------
   redis:
     image: redis:7-alpine
     container_name: moe-ultra-redis
     restart: unless-stopped
+    command: redis-server --appendonly yes --maxmemory 512mb --maxmemory-policy allkeys-lru
     ports:
-      - "6379:6379"
+      - "${REDIS_PORT:-6379}:6379"
     volumes:
       - redis-data:/data
-    command: redis-server --appendonly yes --maxmemory 2gb --maxmemory-policy allkeys-lru
-    networks:
-      - moe-network
     healthcheck:
       test: ["CMD", "redis-cli", "ping"]
       interval: 10s
       timeout: 5s
-      retries: 5
+      retries: 3
+    networks:
+      - moe-network
+    deploy:
+      resources:
+        limits:
+          cpus: '0.5'
+          memory: 768M
+        reservations:
+          cpus: '0.25'
+          memory: 256M
 
-  # ----------------------------------------------------------------
-  # Prometheus Metrics Service
-  # ----------------------------------------------------------------
+  # ---------------------------------------------------------------------------
+  # Prometheus - Metrics collection and monitoring
+  # ---------------------------------------------------------------------------
   prometheus:
-    image: prom/prometheus:v2.48.0
+    image: prom/prometheus:v2.47.0
     container_name: moe-ultra-prometheus
     restart: unless-stopped
     ports:
-      - "9090:9090"
+      - "${PROMETHEUS_PORT:-9090}:9090"
     volumes:
       - ./prometheus.yml:/etc/prometheus/prometheus.yml:ro
       - prometheus-data:/prometheus
     command:
       - '--config.file=/etc/prometheus/prometheus.yml'
       - '--storage.tsdb.path=/prometheus'
+      - '--storage.tsdb.retention.time=15d'
       - '--web.enable-lifecycle'
     networks:
       - moe-network
-    profiles:
-      - monitoring
+    depends_on:
+      - api
+    healthcheck:
+      test: ["CMD", "wget", "-q", "--spider", "http://localhost:9090/-/healthy"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+    deploy:
+      resources:
+        limits:
+          cpus: '1'
+          memory: 1G
+        reservations:
+          cpus: '0.5'
+          memory: 512M
 
-  # ----------------------------------------------------------------
-  # Grafana Visualization Service
-  # ----------------------------------------------------------------
+  # ---------------------------------------------------------------------------
+  # Grafana - Visualization and dashboards
+  # ---------------------------------------------------------------------------
   grafana:
     image: grafana/grafana:10.2.0
     container_name: moe-ultra-grafana
     restart: unless-stopped
     ports:
-      - "3000:3000"
+      - "${GRAFANA_PORT:-3001}:3000"
+    environment:
+      - GF_SECURITY_ADMIN_USER=${GRAFANA_ADMIN_USER:-admin}
+      - GF_SECURITY_ADMIN_PASSWORD=${GRAFANA_ADMIN_PASSWORD:-admin}
+      - GF_USERS_ALLOW_SIGN_UP=false
+      - GF_SERVER_ROOT_URL=${GF_SERVER_ROOT_URL:-http://localhost:3001}
     volumes:
       - ./grafana-datasources.yml:/etc/grafana/provisioning/datasources/datasources.yml:ro
       - grafana-data:/var/lib/grafana
-    environment:
-      - GF_SECURITY_ADMIN_USER=admin
-      - GF_SECURITY_ADMIN_PASSWORD=changeme
-      - GF_USERS_ALLOW_SIGN_UP=false
     networks:
       - moe-network
     depends_on:
       - prometheus
-    profiles:
-      - monitoring
-
-  # ----------------------------------------------------------------
-  # Development Helper Service (optional)
-  # ----------------------------------------------------------------
-  dev:
-    build:
-      context: ..
-      dockerfile: docker/Dockerfile
-      target: production
-    container_name: moe-ultra-dev
-    volumes:
-      - ../:/app:rw
-    environment:
-      - ENVIRONMENT=development
-      - DEBUG=true
-    working_dir: /app
-    entrypoint: ["/bin/bash"]
-    stdin_open: true
-    tty: true
-    networks:
-      - moe-network
-    profiles:
-      - dev
+    healthcheck:
+      test: ["CMD", "wget", "-q", "--spider", "http://localhost:3000/api/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+    deploy:
+      resources:
+        limits:
+          cpus: '0.5'
+          memory: 512M
+        reservations:
+          cpus: '0.25'
+          memory: 256M
 
 networks:
   moe-network:
     driver: bridge
-    name: moe-ultra-network
+    ipam:
+      config:
+        - subnet: 172.28.0.0/16
 
 volumes:
+  postgres-data:
+    driver: local
   redis-data:
     driver: local
   prometheus-data:
     driver: local
   grafana-data:
     driver: local
-
-# ================================================================
-# Usage Instructions:
-#
-# Production (with monitoring):
-#   docker-compose -f docker/docker-compose.yml --profile monitoring up -d
-#
-# Development:
-#   docker-compose -f docker/docker-compose.yml --profile dev up
-#
-# View logs:
-#   docker-compose -f docker/docker-compose.yml logs -f app
-#
-# Stop all services:
-#   docker-compose -f docker/docker-compose.yml down
-#
-# Rebuild after code changes:
-#   docker-compose -f docker/docker-compose.yml build --no-cache app
-# ================================================================
-
-# End of docker-compose.yml
+  model-cache:
+    driver: local
+    driver_opts:
+      type: none
+      device: ${MODEL_CACHE_DIR:-./model-cache}
+      o: bind

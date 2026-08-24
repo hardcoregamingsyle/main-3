@@ -7,8 +7,8 @@ name = "moe-ultra-engine"
 version = "1.0.0"
 description = "Ultra-memory-efficient MoE inference engine for running 2.4T parameter models on consumer hardware"
 readme = "README.md"
-requires-python = ">=3.10,<3.13"
 license = {text = "MIT"}
+requires-python = ">=3.10,<3.13"
 authors = [
     {name = "Thalamus Code Project", email = "dev@thalamus.ai"}
 ]
@@ -16,7 +16,7 @@ maintainers = [
     {name = "Engineering Team", email = "engineering@thalamus.ai"}
 ]
 classifiers = [
-    "Development Status :: 3 - Alpha",
+    "Development Status :: 4 - Beta",
     "Intended Audience :: Developers",
     "Intended Audience :: Science/Research",
     "License :: OSI Approved :: MIT License",
@@ -25,287 +25,286 @@ classifiers = [
     "Programming Language :: Python :: 3.11",
     "Programming Language :: Python :: 3.12",
     "Topic :: Scientific/Engineering :: Artificial Intelligence",
-    "Topic :: Software Development :: Libraries :: Python Modules"
+    "Typing :: Typed"
 ]
-keywords = [
-    "machine-learning",
-    "deep-learning",
-    "mixture-of-experts",
-    "mo-e",
-    "inference",
-    "transformers",
-    "llm",
-    "large-language-models",
-    "quantization",
-    "memory-efficient"
-]
+keywords = ["moel", "llm", "inference", "quantization", "transformers"]
+
+# Core dependencies - pinned with compatible ranges
 dependencies = [
-    "torch>=2.1.0,<3.0.0",
-    "torchvision>=0.16.0,<0.20.0",
-    "torchaudio>=2.1.0,<3.0.0",
-    "transformers>=4.37.0,<5.0.0",
-    "accelerate>=0.26.0,<1.0.0",
+    # PyTorch ecosystem - main ML framework
+    "torch>=2.0.0,<3.0.0",
+    "torchvision>=0.15.0,<0.20.0",
+    "torchaudio>=2.0.0,<2.5.0",
+    
+    # Hugging Face transformers - model loading and inference
+    "transformers>=4.35.0,<4.45.0",
+    "accelerate>=0.24.0,<0.35.0",
+    "huggingface-hub>=0.19.0,<0.26.0",
+    "safetensors>=0.4.0,<0.5.0",
+    
+    # Quantization for memory efficiency
+    "bitsandbytes>=0.41.0,<0.45.0",
+    "optimum>=1.14.0,<1.22.0",
+    "optimum-quanto>=0.2.0,<0.3.0",
+    
+    # Numerical computing
     "numpy>=1.24.0,<2.0.0",
-    "scipy>=1.11.0,<2.0.0",
-    "fastapi>=0.109.0,<1.0.0",
-    "uvicorn[standard]>=0.27.0,<1.0.0",
-    "pydantic>=2.5.0,<3.0.0",
-    "pydantic-settings>=2.1.0,<3.0.0",
-    "python-multipart>=0.0.9",
-    "httpx>=0.26.0,<1.0.0",
-    "aiohttp>=3.9.0,<4.0.0",
-    "safetensors>=0.4.0,<1.0.0",
-    "sentencepiece>=0.2.0,<1.0.0",
-    "protobuf>=4.25.0,<6.0.0",
-    "tokenizers>=0.15.0,<1.0.0",
-    "huggingface-hub>=0.20.0,<1.0.0",
-    "pillow>=10.2.0,<11.0.0",
-    "pandas>=2.1.0,<3.0.0",
-    "matplotlib>=3.8.0,<4.0.0",
-    "seaborn>=0.13.0,<1.0.0",
-    "rich>=13.7.0,<14.0.0",
-    "tqdm>=4.66.0,<5.0.0",
-    "click>=8.1.0,<9.0.0",
-    "typer>=0.9.0,<1.0.0",
+    "scipy>=1.11.0,<1.14.0",
+    "pandas>=2.0.0,<2.3.0",
+    
+    # API layer
+    "fastapi>=0.104.0,<0.116.0",
+    "uvicorn[standard]>=0.24.0,<0.32.0",
+    "pydantic>=2.0.0,<2.10.0",
+    "pydantic-settings>=2.0.0,<2.7.0",
+    "python-multipart>=0.0.6,<0.1.0",
+    
+    # Async HTTP clients
+    "aiohttp>=3.9.0,<3.11.0",
+    "httpx>=0.25.0,<0.28.0",
+    "httpx-sse>=0.3.0,<0.5.0",
+    
+    # Tensor operations and optimization
+    "einops>=0.7.0,<0.9.0",
+    "triton>=2.1.0,<3.0.0",
+    "tensorly>=0.8.0,<0.9.0",
+    
+    # Configuration and utilities
     "python-dotenv>=1.0.0,<2.0.0",
     "pyyaml>=6.0.1,<7.0.0",
+    "jinja2>=3.1.0,<3.2.0",
+    "click>=8.1.0,<8.2.0",
+    "rich>=13.0.0,<14.0.0",
+    "typer>=0.9.0,<0.13.0",
+    
+    # Monitoring and observability
+    "prometheus-client>=0.18.0,<0.22.0",
+    "opentelemetry-api>=1.21.0,<1.28.0",
+    "opentelemetry-sdk>=1.21.0,<1.28.0",
+    "opentelemetry-exporter-otlp>=1.21.0,<1.28.0",
+    
+    # Caching and session management
     "redis>=5.0.0,<6.0.0",
-    "sqlalchemy>=2.0.25,<3.0.0",
-    "alembic>=1.13.0,<2.0.0",
-    "aiosqlite>=0.19.0,<1.0.0",
-    "asyncpg>=0.29.0,<1.0.0",
-    "psycopg2-binary>=2.9.9,<3.0.0",
-    "boto3>=1.34.0,<2.0.0",
-    "aioboto3>=12.0.0,<13.0.0",
-    "cryptography>=42.0.0,<43.0.0",
-    "bcrypt>=4.1.0,<5.0.0",
-    "pyjwt>=2.8.0,<3.0.0",
-    "argon2-cffi>=23.1.0,<24.0.0",
-    "httpx-sse>=0.4.0,<1.0.0",
-    "sse-starlette>=1.8.0,<2.0.0",
-    "websockets>=12.0,<13.0",
-    "orjson>=3.9.0,<4.0.0",
-    "msgpack>=1.0.7,<2.0.0",
-    "lz4>=4.3.2,<5.0.0",
-    "zstandard>=0.22.0,<1.0.0",
-    "xxhash>=3.4.0,<4.0.0",
-    "diskcache>=5.6.0,<6.0.0",
+    "aioredis>=2.0.0,<3.0.0",
     "cachetools>=5.3.0,<6.0.0",
-    "joblib>=1.3.0,<2.0.0",
-    "joblib-stream>=0.1.0,<1.0.0",
-    "psutil>=5.9.0,<6.0.0",
-    "pynvml>=11.5.0,<12.0.0",
-    "nvidia-ml-py>=12.535.133,<13.0.0",
-    "triton>=2.2.0,<3.0.0",
-    "flash-attn>=2.5.0,<3.0.0",
-    "bitsandbytes>=0.42.0,<1.0.0",
-    "deepspeed>=0.14.0,<1.0.0",
-    "tensorboard>=2.16.0,<3.0.0",
-    "wandb>=0.16.0,<1.0.0",
-    "mlflow>=2.11.0,<3.0.0",
-    "optuna>=3.5.0,<4.0.0",
-    "hydra-core>=1.3.0,<2.0.0",
-    "omegaconf>=2.3.0,<3.0.0",
-    "loguru>=0.7.0,<1.0.0",
-    "structlog>=24.1.0,<25.0.0",
-    "colorama>=0.4.6,<1.0.0",
-    "importlib-metadata>=7.0.0,<8.0.0",
-    "typing-extensions>=4.9.0,<5.0.0",
-    "backports-strenum>=1.3.0,<2.0.0",
-    "exceptiongroup>=1.2.0,<2.0.0",
-    "tomli>=2.0.1,<3.0.0",
-    "filelock>=3.13.0,<4.0.0",
-    "fsspec>=2024.2.0,<2025.0.0",
-    "requests>=2.31.0,<3.0.0"
+    
+    # Database ORM
+    "sqlalchemy>=2.0.0,<2.1.0",
+    "alembic>=1.12.0,<1.14.0",
+    "asyncpg>=0.29.0,<0.31.0",
+    
+    # Logging
+    "loguru>=0.7.0,<0.8.0",
+    "structlog>=23.1.0,<25.0.0",
+    
+    # Serialization
+    "orjson>=3.9.0,<4.0.0",
+    "msgpack>=1.0.0,<2.0.0",
+    
+    # Security
+    "cryptography>=41.0.0,<44.0.0",
+    "itsdangerous>=2.1.0,<3.0.0",
+    "python-jose[cryptography]>=3.3.0,<3.5.0",
 ]
 
 [project.optional-dependencies]
-dev = [
-    "pytest>=8.0.0,<9.0.0",
-    "pytest-cov>=4.1.0,<5.0.0",
-    "pytest-asyncio>=0.23.0,<1.0.0",
-    "pytest-xdist>=3.5.0,<4.0.0",
-    "pytest-mock>=3.14.0,<4.0.0",
-    "pytest-timeout>=2.3.0,<3.0.0",
-    "pytest-rerunfailures>=13.0,<14.0",
-    "black>=24.1.0,<25.0.0",
-    "isort>=5.13.2,<6.0.0",
-    "flake8>=7.0.0,<8.0.0",
-    "mypy>=1.8.0,<2.0.0",
-    "pyright>=1.1.350,<2.0.0",
-    "ruff>=0.3.0,<1.0.0",
-    "pre-commit>=3.6.0,<4.0.0",
-    "bandit>=1.7.0,<2.0.0",
-    "safety>=2.3.0,<3.0.0",
-    "pip-audit>=2.7.0,<3.0.0",
-    "gprofiler>=3.0.0,<4.0.0",
-    "memray>=1.12.0,<2.0.0",
-    "py-spy>=0.3.14,<1.0.0",
-    "line-profiler>=4.1.0,<5.0.0",
-    "cProfile-view>=3.0.0,<4.0.0",
-    "memory-profiler>=0.61.0,<1.0.0",
-    "tracemalloc-utils>=0.1.0,<1.0.0",
-    "jupyter>=1.0.0,<2.0.0",
-    "notebook>=7.0.0,<8.0.0",
-    "ipykernel>=6.29.0,<7.0.0",
-    "nbconvert>=7.16.0,<8.0.0",
-    "papermill>=2.5.0,<3.0.0"
+gpu = [
+    "torch>=2.0.0,<3.0.0",
+    "torchvision>=0.15.0,<0.20.0",
+    "bitsandbytes>=0.41.0,<0.45.0",
+]
+cpu = [
+    "onnxruntime>=1.16.0,<1.20.0",
+    "onnx>=1.15.0,<1.17.0",
+]
+monitoring = [
+    "prometheus-client>=0.18.0,<0.22.0",
+    "opentelemetry-api>=1.21.0,<1.28.0",
+    "opentelemetry-sdk>=1.21.0,<1.28.0",
+]
+all = [
+    "moe-ultra-engine[gpu]",
+    "moe-ultra-engine[monitoring]",
 ]
 
-[project.urls]
-Homepage = "https://github.com/thalamus/moe-ultra-engine"
-Documentation = "https://github.com/thalamus/moe-ultra-engine#readme"
-Repository = "https://github.com/thalamus/moe-ultra-engine"
-Issues = "https://github.com/thalamus/moe-ultra-engine/issues"
-Changelog = "https://github.com/thalamus/moe-ultra-engine/releases"
-
 [project.scripts]
-moe-run = "core.cli:main"
+moe-cli = "core.cli:cli"
+moe-server = "core.server:run_server"
 moe-benchmark = "scripts.benchmark:main"
 moe-download = "scripts.download_model:main"
 moe-quantize = "scripts.quantize_model:main"
-moe-convert = "scripts.convert_gguf:main"
+
+[project.urls]
+Homepage = "https://github.com/thalamus/moe-ultra-engine"
+Documentation = "https://docs.thalamus.ai/moe-ultra"
+Repository = "https://github.com/thalamus/moe-ultra-engine.git"
+Changelog = "https://github.com/thalamus/moe-ultra-engine/blob/main/CHANGELOG.md"
+Issues = "https://github.com/thalamus/moe-ultra-engine/issues"
 
 [tool.hatch]
-version.source = "vcs"
-build.hooks.vcs.version-file = "moe_ultra_engine/_version.py"
+version.path = "__init__.py"
+
+[tool.hatch.build]
+only-packages = true
+packages = ["core", "api", "db", "scripts"]
+artifacts = ["*.so", "*.pyd"]
 
 [tool.hatch.build.targets.wheel]
-packages = ["core", "api", "ui"]
-include = ["*.yaml", "*.yml", "*.sql", "*.sh", "*.md"]
+packages = ["core", "api", "db", "scripts"]
 
 [tool.hatch.build.targets.sdist]
-exclude = ["tests", ".github", ".vscode", ".idea"]
+include = [
+    "core/",
+    "api/",
+    "db/",
+    "scripts/",
+    "config/",
+    "tests/",
+    "README.md",
+    "LICENSE",
+    "pyproject.toml",
+]
+exclude = [
+    "ui/",
+    "docker/",
+    ".github/",
+    "node_modules/",
+    "__pycache__/",
+    "*.egg-info/",
+    ".env",
+    ".env.*",
+]
 
 [tool.hatch.envs.default]
 type = "virtual"
-features = ["dev"]
-python = "3.11"
-dependencies = [
-    "moe-ultra-engine[dev]"
-]
+path = ".venv"
+features = ["all"]
+
+[tool.hatch.envs.default.scripts]
+test = "pytest tests/ -v --cov=core --cov=api --cov-report=xml --cov-report=html"
+test-unit = "pytest tests/unit/ -v"
+test-integration = "pytest tests/integration/ -v"
+test-e2e = "pytest tests/e2e/ -v"
+lint = "ruff check . && black --check . && mypy ."
+format = "black . && ruff check --fix ."
+type-check = "mypy ."
+benchmark = "pytest tests/performance/ -v --benchmark-only"
+docs = "mkdocs serve"
 
 [tool.hatch.envs.test]
-type = "virtual"
-features = ["dev"]
-python = "3.11"
-dependencies = [
-    "moe-ultra-engine[dev]"
+features = ["all"]
+extra-dependencies = [
+    "pytest>=7.4.0,<8.2.0",
+    "pytest-cov>=4.1.0,<5.1.0",
+    "pytest-asyncio>=0.21.0,<0.24.0",
+    "pytest-xdist>=3.3.0,<3.7.0",
+    "pytest-benchmark>=4.0.0,<5.1.0",
+    "mock>=5.1.0,<6.0.0",
+    "faker>=20.0.0,<26.0.0",
 ]
 
 [tool.hatch.envs.lint]
-type = "virtual"
-features = ["dev"]
-python = "3.11"
+installer = "pip"
+detached = true
 dependencies = [
-    "moe-ultra-engine[dev]",
-    "ruff>=0.3.0",
-    "mypy>=1.8.0",
-    "black>=24.1.0"
+    "black>=23.0.0,<25.0.0",
+    "ruff>=0.1.0,<0.6.0",
+    "mypy>=1.7.0,<1.12.0",
+    "pytest>=7.4.0,<8.2.0",
 ]
 
-[tool.hatch.envs.docs]
-type = "virtual"
-features = ["dev"]
-python = "3.11"
-dependencies = [
-    "moe-ultra-engine[dev]",
-    "mkdocs>=1.5.0",
-    "mkdocs-material>=9.5.0",
-    "mkdocstrings[python]>=0.24.0"
+[tool.hatch.envs.lint.scripts]
+style = [
+    "ruff check .",
+    "black --check .",
+]
+typing = "mypy ."
+full = [
+    "style",
+    "typing",
 ]
 
-[tool.hatch.envs.types]
-type = "virtual"
-features = ["dev"]
-python = "3.11"
-dependencies = [
-    "moe-ultra-engine[dev]",
-    "mypy>=1.8.0",
-    "types-requests>=2.31.0",
-    "types-PyYAML>=6.0.12",
-    "types-aiofiles>=23.2.0",
-    "types-ujson>=5.9.0",
-    "types-orjson>=3.9.0"
-]
+[tool.black]
+line-length = 100
+target-version = ["py310", "py311", "py312"]
+include = "\\.pyi?$"
+extend-exclude = "(tests/migrations/|.venv/)"
 
 [tool.ruff]
 target-version = "py310"
 line-length = 100
 select = [
-    "E", "W",  # pycodestyle
-    "F",       # Pyflakes
-    "I",       # isort
-    "B",       # flake8-bugbear
-    "C4",      # flake8-comprehensions
-    "UP",      # pyupgrade
-    "N",       # pep8-naming
-    "D",       # pydocstyle
-    "ANN",     # flake8-annotations
-    "ASYNC",   # flake8-async
-    "S",       # flake8-bandit
-    "SIM",     # flake8-simplify
-    "TID",     # flake8-tidy-imports
-    "ARG",     # flake8-unused-arguments
-    "PTH",     # flake8-use-pathlib
-    "RUF",     # ruff-specific rules
+    "E",    # pycodestyle errors
+    "W",    # pycodestyle warnings
+    "F",    # pyflakes
+    "I",    # isort
+    "B",    # flake8-bugbear
+    "C4",   # flake8-comprehensions
+    "UP",   # pyupgrade
+    "ANN",  # flake8-annotations
+    "ASYNC",# flake8-async
+    "SIM",  # flake8-simplify
+    "PT",   # flake8-pytest-style
 ]
 ignore = [
-    "E501",    # line too long (handled by black)
-    "D100",    # public module docstring missing
-    "D104",    # public package docstring missing
-    "ANN101",  # type annotation for self
-    "ANN102",  # type annotation for cls
+    "ANN101",  # Missing type annotation for self in method
+    "ANN102",  # Missing type annotation for cls in classmethod
+    "D203",    # One blank line required before class docstring
+    "D213",    # Multi-line docstring summary should start at second line
 ]
 
 [tool.ruff.per-file-ignores]
-"tests/**/*.py" = ["ANN", "D", "S101"]
-"scripts/**/*.py" = ["S603", "S607"]
-
-[tool.ruff.isort]
-known-first-party = ["core", "api", "ui", "tests"]
-section-order = ["future", "standard-library", "third-party", "first-party", "local-folder"]
-
-[tool.ruff.pydocstyle]
-convention = "google"
-
-[tool.ruff.flake8-annotations]
-suppress-none-returning = true
-allow-untyped-defs = false
-allow-overload = true
+"tests/*" = ["ANN", "S101"]
+"scripts/*" = ["ANN"]
+"__init__.py" = ["F401"]
 
 [tool.mypy]
-python-version = "3.11"
+python_version = "3.10"
 warn_return_any = true
 warn_unused_configs = true
-ignore_missing_imports = true
-strict_optional = true
-check_untyped_defs = true
 disallow_untyped_defs = true
-no_implicit_reexport = true
-warn_unreachable = true
-glob = ["core/*.py", "api/*.py", "scripts/*.py"]
+disallow_incomplete_defs = true
+check_untyped_defs = true
+no_implicit_optional = true
+strict_equality = true
+warn_redundant_casts = true
+warn_unused_ignores = true
+show_error_codes = true
+pretty = true
+
+[[tool.mypy.overrides]]
+module = ["tests.*", "scripts.*"]
+disallow_untyped_defs = false
 
 [tool.pytest.ini_options]
-minversion = "8.0"
-addopts = "-ra -q --tb=short --cov=core --cov=api --cov-report=term-missing"
 testpaths = ["tests"]
 python_files = ["test_*.py", "*_test.py"]
+python_classes = ["Test*"]
 python_functions = ["test_*"]
-asyncio_mode = "auto"
+addopts = "-v --tb=short --strict-markers"
 markers = [
-    "slow: marks tests as slow (deselect with '-m \"not slow\"')",
+    "slow: marks tests as slow",
     "integration: marks tests as integration tests",
     "e2e: marks tests as end-to-end tests",
-    "unit: marks tests as unit tests",
     "gpu: marks tests requiring GPU",
+    "benchmark: marks tests as benchmarks",
+]
+filterwarnings = [
+    "error::DeprecationWarning",
+    "error::PendingDeprecationWarning",
+    "ignore::DeprecationWarning:transformers.*",
+    "ignore::DeprecationWarning:huggingface_hub.*",
 ]
 
 [tool.coverage.run]
 source = ["core", "api"]
-object = "./coverage"
 branch = true
-omit = ["*/tests/*", "*/__pycache__/*", "*/migrations/*"]
+parallel = true
+omit = [
+    "tests/*",
+    "scripts/*",
+    "*/__init__.py",
+]
 
 [tool.coverage.report]
 exclude_lines = [
@@ -317,64 +316,13 @@ exclude_lines = [
     "if TYPE_CHECKING:",
     "@abstractmethod",
 ]
-show_missing = true
-skip_covered = true
-
-[tool.black]
-line-length = 100
-target-version = ["py310", "py311", "py312"]
-include = '\.pyi?$'
-extend-exclude = '''
-/(
-    \.git
-  | \.hg
-  | \.mypy_cache
-  | \.tox
-  | \.venv
-  | _build
-  | buck-out
-  | build
-  | dist
-)/
-'''
 
 [tool.isort]
 profile = "black"
 line_length = 100
-multi_line_output = 3
-include_trailing_comma = true
-force_grid_wrap = 0
-use_parentheses = true
-ensure_newline_before_comments = true
-skip_glob = ["**/__pycache__/**", "**/.venv/**", "**/node_modules/**"]
+known_first_party = ["core", "api", "db", "scripts"]
+skip_glob = ["*/migrations/*", ".venv/*"]
 
-[tool.pylint.MASTER]
-extension-pkg-whitelist = ["numpy", "torch", "safetensors", "orjson"]
-ignore = ["migrations", "__pycache__", "build", "dist"]
-persistent = true
-jobs = 0
-
-[tool.pylint.FORMAT]
-max-line-length = 100
-
-[tool.pylint.MESSAGES CONTROL]
-disable = [
-    "too-few-public-methods",
-    "duplicate-code",
-    "too-many-arguments",
-    "too-many-locals",
-]
-
-[tool.pylint.DESIGN]
-max-args = 10
-max-attributes = 15
-max-branches = 20
-max-returns = 8
-max-statements = 50
-max-module-members = 200
-
-[tool.uv]
-optimize-for-deploy = true
-extra-index-url = [
-    "https://download.pytorch.org/whl/cu121",
-]
+[tool.bandit]
+skips = ["B101", "B310", "B311"]
+targets = ["core", "api"]
