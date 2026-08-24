@@ -1,0 +1,82 @@
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Virtual environments
+venv/
+env/
+ENV/
+.env
+.venv
+
+# Distribution / packaging
+build/
+dist/
+*.egg-info/
+
+# IDE / Editor
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
+logs/
+
+# Model weights and cache (large files)
+*.bin
+*.safetensors
+*.gguf
+model_cache/
+hf_cache/
+
+# Database
+*.db
+*.sqlite
+*.sqlite3
+db/
+
+# Test coverage
+htmlcov/
+.coverage
+.pytest_cache/
+
+# Type checking
+.mypy_cache/
+.dmypy.json
+dmypy.json
+
+# Build artifacts
+*.so
+*.dylib
+*.dll
+
+# Jupyter
+.ipynb_checkpoints/
+
+# Environment
+.env.local
+.env.*.local
+
+# Temporary files
+*.tmp
+*.temp
+tmp/
+
+# Profiling
+*.prof
+*.pstats
+
+# Docker
+docker-compose.override.yml
+
+# IDE specific
+*.sublime-project
+*.sublime-workspace

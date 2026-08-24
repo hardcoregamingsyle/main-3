@@ -1,0 +1,98 @@
+version: '3.8'
+
+services:
+  moe-engine:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile
+      target: runtime
+    image: moe-ultra-engine:latest
+    container_name: moe-ultra-engine
+    restart: unless-stopped
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
+    environment:
+      - MODEL_ID=${MODEL_ID:-Qwen/Qwen1.5-MoE-A2.7B}
+      - MODEL_REVISION=${MODEL_REVISION:-main}
+      - HF_TOKEN=${HF_TOKEN}
+      - MAX_GPU_MEMORY_GB=${MAX_GPU_MEMORY_GB:-6}
+      - MAX_CPU_MEMORY_GB=${MAX_CPU_MEMORY_GB:-32}
+      - MAX_DISK_MEMORY_GB=${MAX_DISK_MEMORY_GB:-100}
+      - OFFLOAD_STRATEGY=${OFFLOAD_STRATEGY:-expert_aware}
+      - QUANTIZATION=${QUANTIZATION:-int4}
+      - LOG_LEVEL=${LOG_LEVEL:-WARNING}
+      - PYTHONPATH=/app
+    volumes:
+      - moe-cache:/var/cache/moe-ultra-engine
+      - moe-logs:/var/log/moe-engine
+      - ./config/prod.yaml:/app/config/prod.yaml:ro
+    ports:
+      - "3000:3000"
+      - "9090:9090"
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:3000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 120s
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "100m"
+        max-file: "5"
+
+  prometheus:
+    image: prom/prometheus:v2.52.0
+    container_name: moe-prometheus
+    restart: unless-stopped
+    volumes:
+      - ./prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus-data:/prometheus
+    ports:
+      - "9091:9090"
+    command:
+      - '--config.file=/etc/prometheus/prometheus.yml'
+      - '--storage.tsdb.path=/prometheus'
+      - '--storage.tsdb.retention.time=30d'
+      - '--web.enable-lifecycle'
+    healthcheck:
+      test: ["CMD", "wget", "-q", "--spider", "http://localhost:9090/-"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  grafana:
+    image: grafana/grafana:10.4.0
+    container_name: moe-grafana
+    restart: unless-stopped
+    environment:
+      - GF_SECURITY_ADMIN_USER=admin
+      - GF_SECURITY_ADMIN_PASSWORD=${GRAFANA_PASSWORD:-admin}
+      - GF_USERS_ALLOW_SIGN_UP=false
+    volumes:
+      - ./grafana-datasources.yml:/etc/grafana/provisioning/datasources/datasources.yml:ro
+      - grafana-data:/var/lib/grafana
+    ports:
+      - "3001:3000"
+    depends_on:
+      - prometheus
+    healthcheck:
+      test: ["CMD", "wget", "-q", "--spider", "http://localhost:3000/api/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+volumes:
+  moe-cache:
+  moe-logs:
+  prometheus-data:
+  grafana-data:
+
+networks:
+  default:
+    name: moe-network

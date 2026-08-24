@@ -1,0 +1,144 @@
+# MoE Ultra Engine - Default Configuration
+# All values can be overridden via environment variables
+
+model:
+  # Default model to load on startup
+  default_id: "Qwen/Qwen1.5-MoE-A2.7B"
+  revision: "main"
+  trust_remote_code: true
+  
+  # Quantization settings
+  quantization:
+    default: "int4"  # fp16, bf16, int8, int4, int4_gptq, int4_awq, fp8
+    fallback: "int8"
+    
+  # MoE specific
+  moe:
+    expert_parallel: false
+    top_k: 2
+    router_aux_loss_coef: 0.01
+
+memory:
+  # GPU memory limit (GB) - 0 for CPU only
+  max_gpu_gb: 4
+  
+  # CPU RAM limit for model offloading (GB)
+  max_cpu_gb: 28
+  
+  # Disk offload limit (GB)
+  max_disk_gb: 50
+  
+  # Offloading strategy
+  offload_strategy: "auto"  # auto, sequential, prefetch, expert_aware
+  
+  # Prefetch settings
+  prefetch:
+    enabled: true
+    layers_ahead: 2
+    expert_prefetch: true
+    async_prefetch: true
+  
+  # Memory mapping
+  mmap_weights: true
+  mmap_threshold_mb: 100
+
+inference:
+  # Generation defaults
+  defaults:
+    max_new_tokens: 512
+    temperature: 0.7
+    top_p: 0.9
+    top_k: 50
+    repetition_penalty: 1.1
+    do_sample: true
+  
+  # Context window
+  max_context_length: 32768
+  
+  # KV Cache
+  kv_cache:
+    dtype: "fp16"  # fp16, fp8, int8
+    quantize: false
+    offload_to_cpu: true
+    max_batch_size: 1
+  
+  # Batch processing
+  continuous_batching: true
+  max_batch_size: 4
+  max_waiting_tokens: 20
+
+performance:
+  # Threading
+  cpu_threads: 0  # 0 = auto
+  intra_op_threads: 0
+  inter_op_threads: 0
+  
+  # CUDA
+  cuda_graphs: false
+  cudnn_benchmark: true
+  
+  # Compilation
+  torch_compile: false
+  compile_mode: "reduce-overhead"
+  
+  # Flash Attention
+  flash_attention: true
+  flash_attention_version: 2
+
+server:
+  host: "0.0.0.0"
+  port: 3000
+  workers: 1
+  timeout: 300
+  
+  # Rate limiting
+  rate_limit:
+    enabled: true
+    requests_per_minute: 60
+    burst: 10
+  
+  # CORS
+  cors:
+    enabled: true
+    allow_origins: ["*"]
+    allow_credentials: true
+  
+  # Authentication
+  auth:
+    enabled: false
+    api_keys: []
+
+logging:
+  level: "INFO"
+  format: "json"
+  file: "logs/moe-engine.log"
+  max_size_mb: 100
+  backup_count: 5
+  
+  # Structured logging
+  structured: true
+  include_trace_id: true
+
+monitoring:
+  prometheus:
+    enabled: true
+    port: 9090
+    path: "/metrics"
+  
+  # Health checks
+  health_check_interval: 30
+  
+  # Performance tracking
+  track_latency: true
+  track_memory: true
+  track_throughput: true
+
+storage:
+  # Model cache directory
+  cache_dir: "~/.cache/moe-ultra-engine"
+  
+  # Offload directory
+  offload_dir: "~/.cache/moe-ultra-engine/offload"
+  
+  # Temporary files
+  temp_dir: "/tmp/moe-ultra-engine"

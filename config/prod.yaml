@@ -1,0 +1,91 @@
+# MoE Ultra Engine - Production Configuration
+# Overrides for production deployment
+
+model:
+  default_id: "Qwen/Qwen1.5-MoE-A2.7B"
+  quantization:
+    default: "int4"
+  moe:
+    expert_parallel: false
+
+memory:
+  max_gpu_gb: 6
+  max_cpu_gb: 32
+  max_disk_gb: 100
+  offload_strategy: "expert_aware"
+  prefetch:
+    enabled: true
+    layers_ahead: 3
+    expert_prefetch: true
+    async_prefetch: true
+  mmap_weights: true
+  mmap_threshold_mb: 50
+
+inference:
+  defaults:
+    max_new_tokens: 1024
+    temperature: 0.7
+    top_p: 0.95
+    top_k: 40
+    repetition_penalty: 1.05
+  max_context_length: 32768
+  kv_cache:
+    dtype: "fp8"
+    quantize: true
+    offload_to_cpu: true
+    max_batch_size: 2
+  continuous_batching: true
+  max_batch_size: 8
+  max_waiting_tokens: 50
+
+performance:
+  cpu_threads: 16
+  intra_op_threads: 8
+  inter_op_threads: 2
+  cuda_graphs: true
+  cudnn_benchmark: true
+  torch_compile: true
+  compile_mode: "max-autotune"
+  flash_attention: true
+  flash_attention_version: 2
+
+server:
+  host: "0.0.0.0"
+  port: 3000
+  workers: 2
+  timeout: 600
+  rate_limit:
+    enabled: true
+    requests_per_minute: 120
+    burst: 20
+  cors:
+    enabled: true
+    allow_origins: ["https://yourdomain.com"]
+    allow_credentials: true
+  auth:
+    enabled: true
+    api_keys: []  # Load from environment
+
+logging:
+  level: "WARNING"
+  format: "json"
+  file: "/var/log/moe-engine/moe-engine.log"
+  max_size_mb: 500
+  backup_count: 10
+  structured: true
+  include_trace_id: true
+
+monitoring:
+  prometheus:
+    enabled: true
+    port: 9090
+    path: "/metrics"
+  health_check_interval: 15
+  track_latency: true
+  track_memory: true
+  track_throughput: true
+
+storage:
+  cache_dir: "/var/cache/moe-ultra-engine"
+  offload_dir: "/var/cache/moe-ultra-engine/offload"
+  temp_dir: "/tmp/moe-ultra-engine"
