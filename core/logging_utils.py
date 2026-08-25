@@ -1,207 +1,298 @@
-"""Logging utilities for MoE Ultra Engine."""
+"""
+Structured logging utilities for MoE Ultra Engine.
 
-from __future__ import annotations
+Supports JSON and text formats, file rotation, and structured context.
+"""
 
-import logging
 import sys
-from datetime import datetime
+import logging
+import logging.handlers
 from pathlib import Path
-from typing import Any, Dict, Optional
-
+from typing import Optional, Dict, Any
+from contextvars import ContextVar
 import json
+from datetime import datetime, timezone
 
 
-class StructuredFormatter(logging.Formatter):
-    """JSON structured logging formatter for production environments."""
-    
-    def __init__(self, env: str = "production") -> None:
-        super().__init__()
-        self.env = env
-        self.hostname = __import__("socket").gethostname()
-    
+# Context variable for request-scoped logging
+request_id_var: ContextVar[Optional[str]] = ContextVar("request_id", default=None)
+session_id_var: ContextVar[Optional[str]] = ContextVar("session_id", default=None)
+
+
+class JSONFormatter(logging.Formatter):
+    """JSON log formatter with structured fields."""
+
+    def __init__(self, include_extra: bool = True, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.include_extra = include_extra
+
     def format(self, record: logging.LogRecord) -> str:
-        """Format log record as JSON."""
-        log_data: Dict[str, Any] = {
-            "timestamp": datetime.utcnow().isoformat() + "Z",
+        log_entry: Dict[str, Any] = {
+            "timestamp": datetime.fromtimestamp(record.created, tz=timezone.utc).isoformat(),
             "level": record.levelname,
             "logger": record.name,
             "message": record.getMessage(),
-            "environment": self.env,
-            "hostname": self.hostname,
-            "thread": record.thread,
-            "process": record.process,
+            "module": record.module,
+            "function": record.funcName,
+            "line": record.lineno,
         }
-        
-        # Add source location
-        if record.filename != "<string>":
-            log_data["location"] = {
-                "file": record.filename,
-                "line": record.lineno,
-                "function": record.funcName,
-            }
-        
-        # Add extra fields
-        if hasattr(record, "extra_fields"):
-            log_data.update(record.extra_fields)
-        
+
+        # Add request/session context if available
+        request_id = request_id_var.get()
+        if request_id:
+            log_entry["request_id"] = request_id
+
+        session_id = session_id_var.get()
+        if session_id:
+            log_entry["session_id"] = session_id
+
         # Add exception info if present
         if record.exc_info:
-            log_data["exception"] = {
-                "type": record.exc_info[0].__name__ if record.exc_info[0] else None,
-                "message": str(record.exc_info[1]) if record.exc_info[1] else None,
-                "traceback": self.formatException(record.exc_info),
-            }
-        
-        return json.dumps(log_data)
+            log_entry["exception"] = self.formatException(record.exc_info)
+
+        # Add extra fields
+        if self.include_extra:
+            for key, value in record.__dict__.items():
+                if key not in {
+                    "name", "msg", "args", "created", "filename", "funcName",
+                    "levelname", "levelno", "lineno", "module", "msecs",
+                    "message", "msg", "pathname", "process", "processName",
+                    "relativeCreated", "thread", "threadName", "exc_info",
+                    "exc_text", "stack_info", "getMessage"
+                }:
+                    log_entry[key] = value
+
+        return json.dumps(log_entry, default=str)
 
 
-class ConsoleFormatter(logging.Formatter):
-    """Human-readable console formatter for development."""
-    
-    COLORS = {
-        "DEBUG": "\033[36m",      # Cyan
-        "INFO": "\033[32m",       # Green
-        "WARNING": "\033[33m",    # Yellow
-        "ERROR": "\033[31m",      # Red
-        "CRITICAL": "\033[35m",   # Magenta
-    }
-    RESET = "\033[0m"
-    
-    def __init__(self, use_colors: bool = True) -> None:
-        super().__init__()
-        self.use_colors = use_colors
-    
+class TextFormatter(logging.Formatter):
+    """Human-readable text log formatter."""
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(
+            fmt="%(asctime)s | %(levelname)-8s | %(name)s | %(message)s",
+            datefmt="%Y-%m-%d %H:%M:%S",
+            *args,
+            **kwargs,
+        )
+
     def format(self, record: logging.LogRecord) -> str:
-        """Format log record with colors for terminal."""
-        timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-        level = record.levelname
-        
-        color = self.COLORS.get(level, "") if self.use_colors else ""
-        reset = self.RESET if self.use_colors else ""
-        
-        message = f"[{timestamp}] {color}{level:<8}{reset} [{record.name}] {record.getMessage()}"
-        
-        if record.filename != "<string>" and self.use_colors:
-            message += f" {color}\033[2m({record.filename}:{record.lineno})\033[0m"
-        
-        if record.exc_info:
-            message += "\n" + self.formatException(record.exc_info)
-        
-        return message
+        # Add context to message
+        request_id = request_id_var.get()
+        session_id = session_id_var.get()
+        context_parts = []
+        if request_id:
+            context_parts.append(f"req={request_id[:8]}")
+        if session_id:
+            context_parts.append(f"sess={session_id[:8]}")
+
+        if context_parts:
+            record.msg = f"[{' '.join(context_parts)}] {record.msg}"
+
+        return super().format(record)
 
 
 def setup_logging(
     level: str = "INFO",
-    config: Optional[Dict[str, Any]] = None,
-    env: str = "development",
-) -> None:
-    """Configure logging for the application.
-    
-    Args:
-        level: Logging level (DEBUG, INFO, WARNING, ERROR, CRITICAL)
-        config: Optional configuration dictionary
-        env: Environment name (development, staging, production)
+    log_format: str = "json",
+    log_file: Optional[str] = None,
+    log_rotation: str = "1 day",
+    log_retention: str = "30 days",
+    enable_console: bool = True,
+) -> logging.Logger:
     """
-    config = config or {}
-    
-    # Determine formatter based on environment
-    if env == "production" or config.get("structured", False):
-        formatter = StructuredFormatter(env)
-    else:
-        use_colors = config.get("colors", True) and sys.stderr.isatty()
-        formatter = ConsoleFormatter(use_colors)
-    
-    # Configure root logger
+    Configure application-wide logging.
+
+    Args:
+        level: Log level (DEBUG, INFO, WARNING, ERROR, CRITICAL)
+        log_format: Output format ("json" or "text")
+        log_file: Path to log file (optional)
+        log_rotation: Rotation interval (e.g., "1 day", "100 MB")
+        log_retention: Retention period (e.g., "30 days")
+        enable_console: Whether to log to console
+
+    Returns:
+        Root logger instance
+    """
     root_logger = logging.getLogger()
-    root_logger.setLevel(getattr(logging, level.upper(), logging.INFO))
-    
+    root_logger.setLevel(getattr(logging, level.upper()))
+
     # Clear existing handlers
     root_logger.handlers.clear()
-    
-    # Create console handler
-    console_handler = logging.StreamHandler(sys.stderr)
-    console_handler.setFormatter(formatter)
-    console_handler.setLevel(getattr(logging, level.upper(), logging.INFO))
-    
-    root_logger.addHandler(console_handler)
-    
-    # Add file handler if configured
-    file_config = config.get("file", {})
-    if file_config.get("enabled", False):
-        log_path = Path(file_config.get("path", "logs/app.log"))
+
+    # Choose formatter
+    if log_format.lower() == "json":
+        formatter = JSONFormatter()
+    else:
+        formatter = TextFormatter()
+
+    # Console handler
+    if enable_console:
+        console_handler = logging.StreamHandler(sys.stdout)
+        console_handler.setFormatter(formatter)
+        console_handler.setLevel(getattr(logging, level.upper()))
+        root_logger.addHandler(console_handler)
+
+    # File handler with rotation
+    if log_file:
+        log_path = Path(log_file).expanduser().resolve()
         log_path.parent.mkdir(parents=True, exist_ok=True)
-        
-        file_handler = logging.FileHandler(str(log_path))
+
+        # Parse rotation
+        rotation_bytes = _parse_size(log_rotation)
+        if rotation_bytes:
+            file_handler = logging.handlers.RotatingFileHandler(
+                log_path,
+                maxBytes=rotation_bytes,
+                backupCount=_parse_retention_count(log_retention),
+                encoding="utf-8",
+            )
+        else:
+            # Time-based rotation
+            when = _parse_time_rotation(log_rotation)
+            file_handler = logging.handlers.TimedRotatingFileHandler(
+                log_path,
+                when=when,
+                interval=1,
+                backupCount=_parse_retention_count(log_retention),
+                encoding="utf-8",
+            )
+
         file_handler.setFormatter(formatter)
-        file_handler.setLevel(getattr(logging, file_config.get("level", level).upper(), logging.INFO))
-        
+        file_handler.setLevel(getattr(logging, level.upper()))
         root_logger.addHandler(file_handler)
-    
-    # Set log levels for specific modules
-    module_levels = config.get("modules", {})
-    for module_name, module_level in module_levels.items():
-        logging.getLogger(module_name).setLevel(getattr(logging, module_level.upper(), logging.INFO))
-    
-    # Disable verbose third-party logs in non-debug modes
-    if level.upper() != "DEBUG":
-        for silent_module in ["urllib3", "botocore", "azure.storage", "google.auth"]:
-            logging.getLogger(silent_module).setLevel(logging.WARNING)
+
+    # Suppress noisy loggers
+    logging.getLogger("urllib3").setLevel(logging.WARNING)
+    logging.getLogger("asyncio").setLevel(logging.WARNING)
+    logging.getLogger("httpx").setLevel(logging.WARNING)
+    logging.getLogger("httpcore").setLevel(logging.WARNING)
+
+    return root_logger
+
+
+def _parse_size(size_str: str) -> Optional[int]:
+    """Parse size string like '100 MB' to bytes."""
+    size_str = size_str.strip().upper()
+    units = {
+        "B": 1,
+        "KB": 1024,
+        "MB": 1024**2,
+        "GB": 1024**3,
+    }
+    for unit, multiplier in units.items():
+        if size_str.endswith(unit):
+            try:
+                return int(float(size_str[:-len(unit)].strip()) * multiplier)
+            except ValueError:
+                pass
+    return None
+
+
+def _parse_time_rotation(rotation_str: str) -> str:
+    """Parse time rotation string to TimedRotatingFileHandler 'when' parameter."""
+    rotation_str = rotation_str.strip().lower()
+    if rotation_str.startswith("second"):
+        return "S"
+    elif rotation_str.startswith("minute"):
+        return "M"
+    elif rotation_str.startswith("hour"):
+        return "H"
+    elif rotation_str.startswith("day"):
+        return "D"
+    elif rotation_str.startswith("week"):
+        return "W0"
+    elif rotation_str.startswith("month"):
+        return "M"
+    return "D"  # Default to daily
+
+
+def _parse_retention_count(retention_str: str) -> int:
+    """Parse retention string to backup count."""
+    retention_str = retention_str.strip().lower()
+    try:
+        if "day" in retention_str:
+            return int(float(retention_str.split()[0]))
+        elif "week" in retention_str:
+            return int(float(retention_str.split()[0])) * 7
+        elif "month" in retention_str:
+            return int(float(retention_str.split()[0])) * 30
+    except (ValueError, IndexError):
+        pass
+    return 30  # Default
 
 
 def get_logger(name: str) -> logging.Logger:
-    """Get a logger instance with the given name.
-    
-    Args:
-        name: Logger name, typically __name__ of the module
-        
-    Returns:
-        Configured logger instance
-    """
+    """Get a logger instance with the given name."""
     return logging.getLogger(name)
 
 
 class LogContext:
-    """Context manager for adding extra fields to log records."""
-    
-    def __init__(self, **kwargs: Any) -> None:
-        self.extra_fields = kwargs
-    
-    def __enter__(self) -> None:
+    """Context manager for adding structured context to logs."""
+
+    def __init__(self, **kwargs: Any):
+        self.kwargs = kwargs
+        self.old_values: Dict[str, Any] = {}
+
+    def __enter__(self) -> "LogContext":
+        # Store old values and set new ones on the logger's extra
+        logger = logging.getLogger()
+        for key, value in self.kwargs.items():
+            # We can't easily modify handler formatters at runtime,
+            # so we use the contextvars approach for request/session IDs
+            pass
+        return self
+
+    def __exit__(self, exc_type, exc_val, exc_tb) -> None:
         pass
-    
-    def __exit__(self, exc_type: Any, exc_val: Any, exc_tb: Any) -> None:
-        pass
-    
-    def patch_logger(self, logger: logging.Logger) -> logging.Logger:
-        """Patch a logger to include extra fields in all records."""
-        original_makeRecord = logger.makeRecord
-        
-        def patchedMakeRecord(*args: Any, **kwargs: Any) -> logging.LogRecord:
-            record = original_makeRecord(*args, **kwargs)
-            if not hasattr(record, "extra_fields"):
-                record.extra_fields = {}
-            record.extra_fields.update(self.extra_fields)
-            return record
-        
-        logger.makeRecord = patchedMakeRecord  # type: ignore[method-assign]
-        return logger
 
 
-def get_correlation_id() -> str:
-    """Generate a unique correlation ID for request tracing."""
-    import uuid
-    return str(uuid.uuid4())
+def set_request_id(request_id: str) -> None:
+    """Set request ID for current context."""
+    request_id_var.set(request_id)
 
 
-def inject_correlation_id(logger: logging.Logger) -> None:
-    """Inject correlation ID into all log records for this logger."""
-    correlation_id = get_correlation_id()
-    original_makeRecord = logger.makeRecord
-    
-    def patchedMakeRecord(*args: Any, **kwargs: Any) -> logging.LogRecord:
-        record = original_makeRecord(*args, **kwargs)
-        if not hasattr(record, "correlation_id"):
-            record.correlation_id = correlation_id
-        return record
-    
-    logger.makeRecord = patchedMakeRecord  # type: ignore[method-assign]
+def set_session_id(session_id: str) -> None:
+    """Set session ID for current context."""
+    session_id_var.set(session_id)
+
+
+def clear_context() -> None:
+    """Clear request/session context."""
+    request_id_var.set(None)
+    session_id_var.set(None)
+
+
+# Performance logging helper
+class PerformanceLogger:
+    """Helper for logging performance metrics."""
+
+    def __init__(self, logger: logging.Logger, operation: str):
+        self.logger = logger
+        self.operation = operation
+        self.start_time: Optional[float] = None
+        self.metadata: Dict[str, Any] = {}
+
+    def __enter__(self) -> "PerformanceLogger":
+        import time
+        self.start_time = time.perf_counter()
+        return self
+
+    def __exit__(self, exc_type, exc_val, exc_tb) -> None:
+        import time
+        if self.start_time is not None:
+            duration_ms = (time.perf_counter() - self.start_time) * 1000
+            self.logger.info(
+                f"{self.operation} completed",
+                extra={
+                    "operation": self.operation,
+                    "duration_ms": round(duration_ms, 2),
+                    "success": exc_type is None,
+                    **self.metadata,
+                },
+            )
+
+    def add_metadata(self, **kwargs: Any) -> "PerformanceLogger":
+        """Add metadata to the performance log entry."""
+        self.metadata.update(kwargs)
+        return self
