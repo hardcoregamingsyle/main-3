@@ -1,451 +1,561 @@
 """
-Main MoE Inference Engine for ultra-efficient model execution.
+MoE Ultra Engine - Core Inference Engine
 
-Handles expert routing, memory management, and token generation for
-Mixture-of-Experts models optimized for consumer hardware.
+Ultra-memory-efficient inference engine for Mixture-of-Experts (MoE) models.
+Capable of running 2.4T parameter models on 32GB RAM.
 """
 
-import asyncio
-import json
-import logging
 import os
+import sys
+import mmap
+import struct
+import logging
 import threading
 import time
+from pathlib import Path
+from typing import Dict, List, Optional, Tuple, Any, Union
 from dataclasses import dataclass, field
 from enum import Enum
-from pathlib import Path
-from typing import Any, Callable, Dict, List, Optional, Tuple, Union
-
+from collections import OrderedDict
 import numpy as np
-from tqdm import tqdm
 
-from core.config import Config
-from core.model_loader import ModelLoader
-from core.quantization import Quantizer
+try:
+    import torch
+    TORCH_AVAILABLE = True
+except ImportError:
+    TORCH_AVAILABLE = False
+    torch = None
 
+try:
+    from safetensors import safe_open
+    SAFETENSORS_AVAILABLE = True
+except ImportError:
+    SAFETENSORS_AVAILABLE = False
+    safe_open = None
+
+from .config import EngineConfig, ModelConfig, ExpertConfig
+from .memory_manager import MemoryManager
+from .expert_cache import ExpertCache, CacheEntry
+from .router import Router, RoutingResult
+from .quantization import Quantizer, QuantizationConfig
+from .moe_model import MoEModel, MoELayer
 
 logger = logging.getLogger(__name__)
 
 
-class ExecutionMode(Enum):
-    """Inference execution modes."""
-    BATCHED = "batched"
-    STREAMING = "streaming"
-    ASYNC = "async"
+class InferenceState(Enum):
+    """Engine inference states."""
+    IDLE = "idle"
+    LOADING = "loading"
+    READY = "ready"
+    INFERRING = "inferring"
+    ERROR = "error"
 
 
 @dataclass
 class GenerationConfig:
     """Configuration for text generation."""
-    max_tokens: int = 2048
+    max_new_tokens: int = 512
     temperature: float = 0.7
     top_p: float = 0.9
     top_k: int = 50
     repetition_penalty: float = 1.1
-    stop_sequences: List[str] = field(default_factory=list)
     do_sample: bool = True
+    num_beams: int = 1
+    early_stopping: bool = True
+    pad_token_id: Optional[int] = None
+    eos_token_id: Optional[int] = None
+    stop_strings: List[str] = field(default_factory=list)
 
 
 @dataclass
-class ExpertStats:
-    """Statistics for expert usage."""
-    expert_id: int
-    calls: int = 0
-    latency_ms: float = 0.0
-    tokens_generated: int = 0
-
-
-@dataclass
-class GenerationResult:
-    """Result of a generation request."""
-    text: str
+class InferenceResult:
+    """Result of an inference request."""
     tokens: List[int]
-    logprobs: List[float]
-    timing: Dict[str, float]
-    stats: Dict[str, Any]
+    text: str
+    routing_stats: Dict[str, Any]
+    latency_ms: float
+    tokens_per_second: float
+    memory_used_mb: float
+    expert_activations: Dict[int, int]
 
 
-class MoeEngine:
+class MoEUltraEngine:
     """
-    Ultra-memory-efficient MoE inference engine.
+    Ultra-memory-efficient MoE Inference Engine.
     
-    Optimized for running large parameter-count models (up to 2.4T)
-    on consumer hardware with limited RAM (32GB DDR4/DDR3).
+    Features:
+    - Memory-mapped model loading (no full model in RAM)
+    - Expert-level caching with LRU eviction
+    - Dynamic expert routing with top-k selection
+    - Quantization support (INT4, INT8, FP8)
+    - Offloading to CPU/disk for large models
+    - Streaming generation support
     """
     
-    def __init__(self, config: Config):
+    def __init__(self, config: EngineConfig):
         self.config = config
-        self.model_loader = ModelLoader(config)
-        self.quantizer = Quantizer(config)
-        
-        # Core state
-        self._model_loaded = False
-        self._active_session = None
+        self.state = InferenceState.IDLE
+        self.model: Optional[MoEModel] = None
+        self.memory_manager: Optional[MemoryManager] = None
+        self.expert_cache: Optional[ExpertCache] = None
+        self.router: Optional[Router] = None
+        self.quantizer: Optional[Quantizer] = None
+        self.tokenizer = None
         self._lock = threading.RLock()
+        self._generation_lock = threading.Lock()
+        self._stats = {
+            'total_tokens': 0,
+            'total_latency_ms': 0.0,
+            'expert_activations': {},
+            'cache_hits': 0,
+            'cache_misses': 0,
+            'offload_count': 0
+        }
         
-        # Performance tracking
-        self.expert_stats: Dict[int, ExpertStats] = {}
-        self.token_times: List[float] = []
-        self.total_tokens_generated = 0
-        
-        # Memory management
-        self._memory_pool: Dict[str, np.ndarray] = {}
-        self.max_memory_mb = config.get("max_memory_mb", 30 * 1024)
-        
-        logger.info(f"MoeEngine initialized with config: {config}")
-    
-    async def load_model(self, model_path: str, quantization: str = "int4") -> bool:
-        """Load a MoE model from disk."""
-        if self._model_loaded:
-            logger.warning("Model already loaded, skipping")
-            return True
+    def initialize(self) -> bool:
+        """Initialize the engine components."""
+        with self._lock:
+            if self.state != InferenceState.IDLE:
+                logger.warning(f"Engine already initialized, state: {self.state}")
+                return False
             
-        logger.info(f"Loading MoE model from {model_path} with quantization: {quantization}")
+            self.state = InferenceState.LOADING
+            logger.info("Initializing MoE Ultra Engine...")
+            
+            try:
+                # Initialize memory manager
+                self.memory_manager = MemoryManager(
+                    max_memory_mb=self.config.max_memory_mb,
+                    offload_dir=self.config.offload_dir,
+                    enable_mmap=self.config.enable_mmap
+                )
+                
+                # Initialize expert cache
+                self.expert_cache = ExpertCache(
+                    max_size_mb=self.config.cache_size_mb,
+                    memory_manager=self.memory_manager
+                )
+                
+                # Initialize router
+                self.router = Router(
+                    num_experts=self.config.model.num_experts,
+                    top_k=self.config.model.top_k,
+                    routing_strategy=self.config.model.routing_strategy
+                )
+                
+                # Initialize quantizer
+                if self.config.quantization.enabled:
+                    self.quantizer = Quantizer(QuantizationConfig(
+                        dtype=self.config.quantization.dtype,
+                        group_size=self.config.quantization.group_size,
+                        symmetric=self.config.quantization.symmetric
+                    ))
+                
+                self.state = InferenceState.READY
+                logger.info("MoE Ultra Engine initialized successfully")
+                return True
+                
+            except Exception as e:
+                self.state = InferenceState.ERROR
+                logger.error(f"Failed to initialize engine: {e}")
+                raise
+    
+    def load_model(self, model_path: Union[str, Path]) -> bool:
+        """Load MoE model from path."""
+        with self._lock:
+            if self.state not in (InferenceState.READY, InferenceState.ERROR):
+                raise RuntimeError(f"Engine not ready for model loading, state: {self.state}")
+            
+            self.state = InferenceState.LOADING
+            logger.info(f"Loading model from {model_path}")
+            
+            try:
+                model_path = Path(model_path)
+                
+                # Load model configuration
+                model_config = self._load_model_config(model_path)
+                
+                # Create MoE model with memory-mapped weights
+                self.model = MoEModel(
+                    config=model_config,
+                    memory_manager=self.memory_manager,
+                    expert_cache=self.expert_cache,
+                    router=self.router,
+                    quantizer=self.quantizer
+                )
+                
+                # Load weights using memory mapping
+                self.model.load_weights(model_path)
+                
+                # Load tokenizer
+                self.tokenizer = self._load_tokenizer(model_path)
+                
+                self.state = InferenceState.READY
+                logger.info("Model loaded successfully")
+                return True
+                
+            except Exception as e:
+                self.state = InferenceState.ERROR
+                logger.error(f"Failed to load model: {e}")
+                raise
+    
+    def _load_model_config(self, model_path: Path) -> ModelConfig:
+        """Load model configuration from config.json."""
+        import json
+        config_path = model_path / "config.json"
+        if not config_path.exists():
+            raise FileNotFoundError(f"config.json not found in {model_path}")
         
+        with open(config_path) as f:
+            config_data = json.load(f)
+        
+        return ModelConfig(
+            model_type=config_data.get("model_type", "moe"),
+            hidden_size=config_data.get("hidden_size", 4096),
+            num_layers=config_data.get("num_hidden_layers", 32),
+            num_experts=config_data.get("num_experts", 8),
+            num_experts_per_tok=config_data.get("num_experts_per_tok", 2),
+            intermediate_size=config_data.get("intermediate_size", 14336),
+            vocab_size=config_data.get("vocab_size", 151936),
+            max_position_embeddings=config_data.get("max_position_embeddings", 32768),
+            rms_norm_eps=config_data.get("rms_norm_eps", 1e-6),
+            rope_theta=config_data.get("rope_theta", 1000000.0),
+            routing_strategy=config_data.get("routing_strategy", "topk"),
+            top_k=config_data.get("num_experts_per_tok", 2),
+            expert_capacity_factor=config_data.get("expert_capacity_factor", 1.25),
+            tie_word_embeddings=config_data.get("tie_word_embeddings", False)
+        )
+    
+    def _load_tokenizer(self, model_path: Path):
+        """Load tokenizer from model directory."""
         try:
-            # Load model weights
-            await self.model_loader.load(model_path, quantization)
-            
-            # Initialize expert statistics
-            num_experts = len(self.model_loader.expert_map)
-            self.expert_stats = {i: ExpertStats(expert_id=i) for i in range(num_experts)}
-            
-            self._model_loaded = True
-            logger.info(f"Model loaded successfully. Experts: {num_experts}")
-            return True
-            
-        except Exception as e:
-            logger.error(f"Failed to load model: {e}")
-            return False
+            from tokenizers import Tokenizer
+            tokenizer_path = model_path / "tokenizer.json"
+            if tokenizer_path.exists():
+                return Tokenizer.from_file(str(tokenizer_path))
+        except ImportError:
+            logger.warning("tokenizers library not available")
+        
+        # Fallback to basic tokenizer
+        try:
+            from transformers import AutoTokenizer
+            return AutoTokenizer.from_pretrained(str(model_path))
+        except ImportError:
+            logger.warning("transformers library not available")
+        
+        return None
     
-    async def generate(
-        self,
-        prompt: str,
-        config: Optional[GenerationConfig] = None,
-        mode: ExecutionMode = ExecutionMode.STREAMING
-    ) -> Union[str, AsyncGenerator[str, None]]:
-        """Generate text from a prompt."""
-        if not self._model_loaded:
-            raise RuntimeError("Model not loaded. Call load_model() first.")
-        
-        if config is None:
-            config = GenerationConfig()
-        
-        start_time = time.time()
-        
-        # Tokenize input
-        tokens = self.model_loader.tokenize(prompt)
-        
-        # Generate tokens
-        generated_tokens = []
-        generated_text = ""
-        
-        if mode == ExecutionMode.BATCHED:
-            result = await self._generate_batch(tokens, config)
-            generated_tokens = result.tokens
-            generated_text = result.text
+    def generate(self, prompt: str, config: Optional[GenerationConfig] = None) -> InferenceResult:
+        """Generate text from prompt."""
+        with self._generation_lock:
+            if self.state != InferenceState.READY:
+                raise RuntimeError(f"Engine not ready, state: {self.state}")
+            if self.model is None:
+                raise RuntimeError("No model loaded")
+            if self.tokenizer is None:
+                raise RuntimeError("No tokenizer loaded")
             
-        elif mode == ExecutionMode.STREAMING:
-            generator = self._generate_stream(tokens, config)
-            async for chunk in generator:
-                yield chunk
+            self.state = InferenceState.INFERRING
+            start_time = time.perf_counter()
+            
+            try:
+                gen_config = config or GenerationConfig()
                 
-        elif mode == ExecutionMode.ASYNC:
-            result = await self._generate_async(tokens, config)
-            generated_tokens = result.tokens
-            generated_text = result.text
-        
-        # Update statistics
-        end_time = time.time()
-        total_time = end_time - start_time
-        avg_token_time = total_time / len(generated_tokens) if generated_tokens else 0
-        
-        result_dict = {
-            "text": generated_text,
-            "tokens": generated_tokens,
-            "logprobs": [],  # Would be populated with actual logprobs
-            "timing": {
-                "total_seconds": round(total_time, 3),
-                "tokens_per_second": round(1 / avg_token_time, 2) if avg_token_time > 0 else 0,
-                "first_token_seconds": 0.0  # Would track TTFB
-            },
-            "stats": {
-                "experts_used": list(self.expert_stats.keys()),
-                "total_expert_calls": sum(s.calls for s in self.expert_stats.values())
-            }
+                # Encode prompt
+                input_ids = self._encode(prompt)
+                
+                # Generate tokens
+                generated_tokens, routing_stats = self._generate_tokens(
+                    input_ids, gen_config
+                )
+                
+                # Decode generated text
+                generated_text = self._decode(generated_tokens)
+                
+                latency_ms = (time.perf_counter() - start_time) * 1000
+                tokens_per_second = len(generated_tokens) / (latency_ms / 1000) if latency_ms > 0 else 0
+                
+                # Update stats
+                self._stats['total_tokens'] += len(generated_tokens)
+                self._stats['total_latency_ms'] += latency_ms
+                
+                result = InferenceResult(
+                    tokens=generated_tokens,
+                    text=generated_text,
+                    routing_stats=routing_stats,
+                    latency_ms=latency_ms,
+                    tokens_per_second=tokens_per_second,
+                    memory_used_mb=self.memory_manager.get_used_memory_mb() if self.memory_manager else 0,
+                    expert_activations=self._stats['expert_activations'].copy()
+                )
+                
+                self.state = InferenceState.READY
+                return result
+                
+            except Exception as e:
+                self.state = InferenceState.ERROR
+                logger.error(f"Generation failed: {e}")
+                raise
+    
+    def _encode(self, text: str) -> List[int]:
+        """Encode text to token IDs."""
+        if hasattr(self.tokenizer, 'encode'):
+            return self.tokenizer.encode(text).ids
+        elif hasattr(self.tokenizer, '__call__'):
+            return self.tokenizer(text).input_ids
+        else:
+            # Fallback: simple character-level encoding
+            return [ord(c) for c in text]
+    
+    def _decode(self, token_ids: List[int]) -> str:
+        """Decode token IDs to text."""
+        if hasattr(self.tokenizer, 'decode'):
+            return self.tokenizer.decode(token_ids)
+        else:
+            # Fallback: simple character-level decoding
+            return ''.join(chr(max(0, min(t, 0x10FFFF))) for t in token_ids)
+    
+    def _generate_tokens(self, input_ids: List[int], config: GenerationConfig) -> Tuple[List[int], Dict[str, Any]]:
+        """Core token generation loop."""
+        generated = []
+        routing_stats = {
+            'layer_routing': [],
+            'expert_counts': {},
+            'total_routed': 0
         }
         
-        return result_dict
-    
-    async def _generate_batch(
-        self,
-        tokens: List[int],
-        config: GenerationConfig
-    ) -> GenerationResult:
-        """Generate all tokens in batch mode."""
-        generated_tokens = tokens.copy()
-        max_new_tokens = config.max_tokens
+        # Prepare input tensor
+        if TORCH_AVAILABLE:
+            input_tensor = torch.tensor([input_ids], dtype=torch.long)
+        else:
+            input_tensor = np.array([input_ids], dtype=np.int64)
         
-        for step in tqdm(range(max_new_tokens), desc="Generating"):
-            # Get current context
-            context = generated_tokens[-min(len(generated_tokens), 512):]
-            
-            # Run forward pass through experts
-            expert_outputs = self._route_experts(context)
-            
-            # Sample next token
-            next_token = self._sample_token(expert_outputs, config)
-            
-            # Handle stop conditions
-            if next_token in self.model_loader.stop_ids:
-                break
-                
-            generated_tokens.append(next_token)
-            
-            # Track expert usage
-            for expert_id, output in expert_outputs.items():
-                self.expert_stats[expert_id].calls += 1
-            
-            # Memory pressure check
-            if len(generated_tokens) % 100 == 0:
-                self._check_memory_pressure()
+        past_key_values = None
         
-        # Decode tokens to text
-        text = self.model_loader.decode(generated_tokens[len(tokens):])
-        
-        return GenerationResult(
-            text=text,
-            tokens=generated_tokens,
-            logprobs=[],
-            timing={},
-            stats={}
-        )
-    
-    async def _generate_stream(
-        self,
-        tokens: List[int],
-        config: GenerationConfig
-    ) -> AsyncGenerator[str, None]:
-        """Stream generation token by token."""
-        generated_tokens = tokens.copy()
-        max_new_tokens = config.max_tokens
-        
-        for step in range(max_new_tokens):
-            # Get current context
-            context = generated_tokens[-min(len(generated_tokens), 512):]
-            
-            # Run forward pass through experts
-            expert_outputs = self._route_experts(context)
-            
-            # Sample next token
-            next_token = self._sample_token(expert_outputs, config)
-            
-            # Handle stop conditions
-            if next_token in self.model_loader.stop_ids:
-                break
-            
-            # Convert token to text chunk
-            token_text = self.model_loader.decode([next_token])
-            generated_tokens.append(next_token)
-            
-            # Yield chunk
-            yield token_text
-            
-            # Track expert usage
-            for expert_id, output in expert_outputs.items():
-                self.expert_stats[expert_id].calls += 1
-            
-            # Small delay for streaming effect
-            await asyncio.sleep(0.001)
-    
-    async def _generate_async(
-        self,
-        tokens: List[int],
-        config: GenerationConfig
-    ) -> GenerationResult:
-        """Generate tokens asynchronously."""
-        # Create async tasks for parallel expert computation
-        tasks = [
-            self._compute_expert_async(i, tokens)
-            for i in range(len(self.model_loader.expert_map))
-        ]
-        
-        results = await asyncio.gather(*tasks)
-        
-        # Aggregate results
-        aggregated = self._aggregate_expert_results(results)
-        
-        # Sample final token
-        next_token = self._sample_token(aggregated, config)
-        
-        text = self.model_loader.decode([next_token])
-        
-        return GenerationResult(
-            text=text,
-            tokens=[next_token],
-            logprobs=[],
-            timing={},
-            stats={}
-        )
-    
-    def _route_experts(self, tokens: List[int]) -> Dict[int, np.ndarray]:
-        """Route input to relevant experts based on gating network."""
-        outputs = {}
-        
-        # Simple routing: distribute across all experts
-        # In production, this would use learned gating weights
-        num_experts = len(self.model_loader.expert_map)
-        
-        for expert_id in range(num_experts):
-            expert_weights = self.model_loader.expert_map[expert_id]
-            
-            # Compute expert output (simplified)
-            output = self._apply_expert(tokens, expert_weights)
-            outputs[expert_id] = output
-        
-        return outputs
-    
-    def _apply_expert(
-        self,
-        tokens: List[int],
-        weights: np.ndarray
-    ) -> np.ndarray:
-        """Apply expert transformation to tokens."""
-        # Simplified expert computation
-        # In production, this would be actual matrix operations
-        token_tensor = np.array(tokens, dtype=np.float32)
-        output = np.dot(token_tensor, weights)
-        return output
-    
-    def _sample_token(
-        self,
-        expert_outputs: Dict[int, np.ndarray],
-        config: GenerationConfig
-    ) -> int:
-        """Sample next token from expert outputs."""
-        # Aggregate expert outputs
-        aggregated = np.mean(list(expert_outputs.values()), axis=0)
-        
-        # Apply temperature scaling
-        scaled = aggregated / config.temperature
-        
-        # Softmax probability distribution
-        probs = np.exp(scaled) / np.sum(np.exp(scaled))
-        
-        # Top-k filtering
-        if config.top_k > 0:
-            k_indices = np.argsort(probs)[-config.top_k:]
-            probs = np.zeros_like(probs)
-            probs[k_indices] = np.exp(scaled[k_indices])
-            probs = probs / np.sum(probs)
-        
-        # Top-p filtering
-        if config.top_p < 1.0:
-            sorted_probs = np.sort(probs)[::-1]
-            cumulative = np.cumsum(sorted_probs)
-            cutoff_idx = np.searchsorted(cumulative, config.top_p)
-            mask = np.zeros_like(probs)
-            mask[np.argsort(sorted_probs)[:cutoff_idx + 1]] = 1
-            probs = probs * mask
-            probs = probs / np.sum(probs)
-        
-        # Sample from distribution
-        token_idx = np.random.choice(len(probs), p=probs)
-        
-        return int(token_idx)
-    
-    def _aggregate_expert_results(
-        self,
-        results: List[np.ndarray]
-    ) -> np.ndarray:
-        """Aggregate results from parallel expert computations."""
-        return np.mean(results, axis=0)
-    
-    def _compute_expert_async(
-        self,
-        expert_id: int,
-        tokens: List[int]
-    ) -> np.ndarray:
-        """Compute expert output asynchronously."""
-        expert_weights = self.model_loader.expert_map[expert_id]
-        return self._apply_expert(tokens, expert_weights)
-    
-    def _check_memory_pressure(self):
-        """Check and manage memory pressure."""
-        current_usage = sum(v.nbytes for v in self._memory_pool.values())
-        threshold_mb = self.max_memory_mb * 0.8
-        
-        if current_usage / (1024 * 1024) > threshold_mb:
-            logger.warning("Memory pressure detected, evicting old tensors")
-            self._evict_old_tensors()
-    
-    def _evict_old_tensors(self):
-        """Evict oldest tensors from memory pool."""
-        if not self._memory_pool:
-            return
-        
-        oldest_key = min(self._memory_pool.keys(), key=lambda k: self._memory_pool[k][0])
-        del self._memory_pool[oldest_key]
-    
-    def get_status(self) -> Dict[str, Any]:
-        """Get current engine status."""
-        return {
-            "model_loaded": self._model_loaded,
-            "total_tokens_generated": self.total_tokens_generated,
-            "expert_stats": {
-                k: {
-                    "calls": v.calls,
-                    "latency_ms": v.latency_ms,
-                    "tokens_generated": v.tokens_generated
-                }
-                for k, v in self.expert_stats.items()
-            },
-            "memory_usage_mb": sum(v.nbytes for v in self._memory_pool.values()) / (1024 * 1024),
-            "max_memory_mb": self.max_memory_mb
-        }
-    
-    async def unload_model(self):
-        """Unload model from memory."""
-        if not self._model_loaded:
-            return
-        
-        logger.info("Unloading model from memory")
-        
-        # Clear memory pool
-        self._memory_pool.clear()
-        
-        # Release model resources
-        await self.model_loader.unload()
-        
-        self._model_loaded = False
-        self.total_tokens_generated = 0
-    
-    async def benchmark(self, prompt: str, iterations: int = 5) -> Dict[str, Any]:
-        """Benchmark model performance."""
-        times = []
-        tokens_per_second = []
-        
-        for i in range(iterations):
-            start = time.time()
-            result = await self.generate(
-                prompt,
-                GenerationConfig(max_tokens=64),
-                mode=ExecutionMode.BATCHED
+        for step in range(config.max_new_tokens):
+            # Forward pass through model
+            logits, past_key_values, step_routing = self.model.forward(
+                input_tensor if step == 0 else input_tensor[:, -1:],
+                past_key_values=past_key_values
             )
-            end = time.time()
             
-            elapsed = end - start
-            tps = len(result.tokens) / elapsed if elapsed > 0 else 0
+            # Update routing stats
+            routing_stats['layer_routing'].append(step_routing)
+            for layer_idx, experts in step_routing.items():
+                for expert_idx in experts:
+                    routing_stats['expert_counts'][expert_idx] = routing_stats['expert_counts'].get(expert_idx, 0) + 1
+                    self._stats['expert_activations'][expert_idx] = self._stats['expert_activations'].get(expert_idx, 0) + 1
+            routing_stats['total_routed'] += sum(len(e) for e in step_routing.values())
             
-            times.append(elapsed)
-            tokens_per_second.append(tps)
+            # Get next token logits
+            next_token_logits = logits[:, -1, :]
+            
+            # Apply temperature
+            if config.temperature != 1.0:
+                next_token_logits = next_token_logits / config.temperature
+            
+            # Apply repetition penalty
+            if config.repetition_penalty != 1.0 and generated:
+                next_token_logits = self._apply_repetition_penalty(
+                    next_token_logits, generated, config.repetition_penalty
+                )
+            
+            # Sample next token
+            next_token = self._sample_token(next_token_logits, config)
+            
+            generated.append(next_token)
+            
+            # Check for EOS
+            if config.eos_token_id and next_token == config.eos_token_id:
+                break
+            
+            # Check for stop strings
+            if config.stop_strings:
+                current_text = self._decode(generated)
+                if any(stop in current_text for stop in config.stop_strings):
+                    break
+            
+            # Update input tensor for next step
+            if TORCH_AVAILABLE:
+                input_tensor = torch.cat([input_tensor, torch.tensor([[next_token]], dtype=torch.long)], dim=1)
+            else:
+                input_tensor = np.concatenate([input_tensor, np.array([[next_token]], dtype=np.int64)], axis=1)
+        
+        return generated, routing_stats
+    
+    def _apply_repetition_penalty(self, logits, generated_tokens: List[int], penalty: float):
+        """Apply repetition penalty to logits."""
+        if TORCH_AVAILABLE and isinstance(logits, torch.Tensor):
+            for token in set(generated_tokens):
+                logits[:, token] /= penalty
+        else:
+            for token in set(generated_tokens):
+                logits[:, token] /= penalty
+        return logits
+    
+    def _sample_token(self, logits, config: GenerationConfig) -> int:
+        """Sample next token from logits."""
+        if TORCH_AVAILABLE and isinstance(logits, torch.Tensor):
+            probs = torch.softmax(logits, dim=-1)
+            
+            if config.do_sample:
+                # Top-k filtering
+                if config.top_k > 0:
+                    top_k_probs, top_k_indices = torch.topk(probs, config.top_k)
+                    probs = torch.zeros_like(probs).scatter_(-1, top_k_indices, top_k_probs)
+                
+                # Top-p (nucleus) filtering
+                if config.top_p < 1.0:
+                    sorted_probs, sorted_indices = torch.sort(probs, descending=True)
+                    cumulative_probs = torch.cumsum(sorted_probs, dim=-1)
+                    sorted_indices_to_remove = cumulative_probs > config.top_p
+                    sorted_indices_to_remove[:, 1:] = sorted_indices_to_remove[:, :-1].clone()
+                    sorted_indices_to_remove[:, 0] = 0
+                    indices_to_remove = sorted_indices_to_remove.scatter(1, sorted_indices, sorted_indices_to_remove)
+                    probs[indices_to_remove] = 0
+                    probs = probs / probs.sum(dim=-1, keepdim=True)
+                
+                next_token = torch.multinomial(probs, num_samples=1).item()
+            else:
+                next_token = torch.argmax(probs, dim=-1).item()
+        else:
+            # NumPy fallback
+            probs = self._softmax(logits[0])
+            
+            if config.do_sample:
+                # Top-k
+                if config.top_k > 0:
+                    top_k_indices = np.argpartition(probs, -config.top_k)[-config.top_k:]
+                    mask = np.zeros_like(probs, dtype=bool)
+                    mask[top_k_indices] = True
+                    probs = probs * mask
+                
+                # Top-p
+                if config.top_p < 1.0:
+                    sorted_indices = np.argsort(probs)[::-1]
+                    sorted_probs = probs[sorted_indices]
+                    cumulative_probs = np.cumsum(sorted_probs)
+                    cutoff = np.searchsorted(cumulative_probs, config.top_p)
+                    probs[sorted_indices[cutoff:]] = 0
+                
+                probs = probs / probs.sum()
+                next_token = np.random.choice(len(probs), p=probs)
+            else:
+                next_token = int(np.argmax(probs))
+        
+        return next_token
+    
+    def _softmax(self, x: np.ndarray) -> np.ndarray:
+        """Compute softmax."""
+        exp_x = np.exp(x - np.max(x))
+        return exp_x / exp_x.sum()
+    
+    def stream_generate(self, prompt: str, config: Optional[GenerationConfig] = None):
+        """Stream tokens as they are generated."""
+        if self.state != InferenceState.READY:
+            raise RuntimeError(f"Engine not ready, state: {self.state}")
+        if self.model is None or self.tokenizer is None:
+            raise RuntimeError("Model or tokenizer not loaded")
+        
+        gen_config = config or GenerationConfig()
+        input_ids = self._encode(prompt)
+        
+        if TORCH_AVAILABLE:
+            input_tensor = torch.tensor([input_ids], dtype=torch.long)
+        else:
+            input_tensor = np.array([input_ids], dtype=np.int64)
+        
+        past_key_values = None
+        generated = []
+        
+        for step in range(gen_config.max_new_tokens):
+            logits, past_key_values, _ = self.model.forward(
+                input_tensor if step == 0 else input_tensor[:, -1:],
+                past_key_values=past_key_values
+            )
+            
+            next_token_logits = logits[:, -1, :]
+            
+            if gen_config.temperature != 1.0:
+                next_token_logits = next_token_logits / gen_config.temperature
+            
+            if gen_config.repetition_penalty != 1.0 and generated:
+                next_token_logits = self._apply_repetition_penalty(
+                    next_token_logits, generated, gen_config.repetition_penalty
+                )
+            
+            next_token = self._sample_token(next_token_logits, gen_config)
+            generated.append(next_token)
+            
+            yield self._decode([next_token])
+            
+            if gen_config.eos_token_id and next_token == gen_config.eos_token_id:
+                break
+            
+            if TORCH_AVAILABLE:
+                input_tensor = torch.cat([input_tensor, torch.tensor([[next_token]], dtype=torch.long)], dim=1)
+            else:
+                input_tensor = np.concatenate([input_tensor, np.array([[next_token]], dtype=np.int64)], axis=1)
+    
+    def get_stats(self) -> Dict[str, Any]:
+        """Get engine statistics."""
+        cache_stats = {}
+        if self.expert_cache:
+            cache_stats = self.expert_cache.get_stats()
+        
+        memory_stats = {}
+        if self.memory_manager:
+            memory_stats = self.memory_manager.get_stats()
         
         return {
-            "avg_time_seconds": np.mean(times),
-            "std_time_seconds": np.std(times),
-            "avg_tokens_per_second": np.mean(tokens_per_second),
-            "min_tokens_per_second": np.min(tokens_per_second),
-            "max_tokens_per_second": np.max(tokens_per_second),
-            "iterations": iterations
+            'engine_state': self.state.value,
+            'total_tokens_generated': self._stats['total_tokens'],
+            'average_latency_ms': self._stats['total_latency_ms'] / max(1, self._stats['total_tokens']),
+            'expert_activations': self._stats['expert_activations'],
+            'cache_hits': self._stats['cache_hits'],
+            'cache_misses': self._stats['cache_misses'],
+            'offload_count': self._stats['offload_count'],
+            'cache': cache_stats,
+            'memory': memory_stats
         }
-</>>
+    
+    def shutdown(self):
+        """Shutdown engine and release resources."""
+        with self._lock:
+            logger.info("Shutting down MoE Ultra Engine...")
+            
+            if self.expert_cache:
+                self.expert_cache.clear()
+            
+            if self.memory_manager:
+                self.memory_manager.cleanup()
+            
+            self.model = None
+            self.tokenizer = None
+            self.state = InferenceState.IDLE
+            logger.info("Engine shutdown complete")
+    
+    def __enter__(self):
+        self.initialize()
+        return self
+    
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        self.shutdown()
+        return False
+
+
+def create_engine(config_path: Optional[str] = None) -> MoEUltraEngine:
+    """Factory function to create engine from config file."""
+    from .config import load_config
+    config = load_config(config_path) if config_path else EngineConfig()
+    return MoEUltraEngine(config)
+
+
+if __name__ == "__main__":
+    # Quick test
+    logging.basicConfig(level=logging.INFO)
+    config = EngineConfig()
+    engine = MoEUltraEngine(config)
+    print("MoE Ultra Engine created successfully")
+    print(f"Config: {config}")
