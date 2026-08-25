@@ -1,242 +1,251 @@
-"""Configuration management for MoE Ultra Engine."""
-
-from __future__ import annotations
+"""
+Configuration management for MoE Ultra Engine.
+Supports YAML config files, environment variables, and programmatic configuration.
+"""
 
 import os
 from pathlib import Path
-from typing import Any, Dict, Optional
-
+from typing import Optional, Dict, Any, List
+from dataclasses import dataclass, field
+from enum import Enum
 import yaml
-from pydantic import BaseModel, Field, validator
-from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
-def get_config_path(env: str = "development") -> str:
-    """Get the configuration file path for the given environment.
-    
-    Args:
-        env: Environment name
-        
-    Returns:
-        Path to configuration file
-    """
-    base_dir = Path(__file__).parent.parent
-    config_file = base_dir / "config" / f"{env}.yaml"
-    return str(config_file)
+class QuantizationType(str, Enum):
+    """Supported quantization types."""
+    NONE = "none"
+    INT8 = "int8"
+    INT4 = "int4"
+    NF4 = "nf4"
+    FP8 = "fp8"
+    GPTQ = "gptq"
+    AWQ = "awq"
 
 
-def load_config(config_path: str) -> Dict[str, Any]:
-    """Load configuration from YAML file.
-    
-    Args:
-        config_path: Path to configuration file
-        
-    Returns:
-        Configuration dictionary
-        
-    Raises:
-        FileNotFoundError: If config file doesn't exist
-        yaml.YAMLError: If config file is invalid
-    """
-    path = Path(config_path)
-    if not path.exists():
-        raise FileNotFoundError(f"Configuration file not found: {config_path}")
-    
-    with open(path, "r") as f:
-        config = yaml.safe_load(f) or {}
-    
-    # Merge with environment variables (overrides)
-    env_prefix = "MOE_"
-    for key, value in os.environ.items():
-        if key.startswith(env_prefix):
-            nested_key = key[len(env_prefix):].lower()
-            parts = nested_key.split("_")
-            
-            current = config
-            for part in parts[:-1]:
-                if part not in current:
-                    current[part] = {}
-                current = current[part]
-            
-            current[parts[-1]] = value
-    
-    return config
+class DeviceType(str, Enum):
+    """Supported device types."""
+    CPU = "cpu"
+    CUDA = "cuda"
+    MPS = "mps"
+    AUTO = "auto"
 
 
-class ServerConfig(BaseModel):
-    """Server configuration settings."""
-    host: str = Field(default="0.0.0.0", description="Host to bind to")
-    port: int = Field(default=8000, ge=1, le=65535, description="Port to bind to")
-    workers: int = Field(default=4, ge=1, le=32, description="Number of worker processes")
-    reload: bool = Field(default=False, description="Enable auto-reload for development")
-    log_level: str = Field(default="info", description="Logging level")
+@dataclass
+class QuantizationConfig:
+    """Quantization configuration for model weights."""
+    type: QuantizationType = QuantizationType.INT4
+    group_size: int = 128
+    damp_percent: float = 0.01
+    desc_act: bool = False
+    static_groups: bool = False
+    sym: bool = True
+    true_sequential: bool = True
+    bits: int = 4
+
+    def __post_init__(self):
+        if isinstance(self.type, str):
+            self.type = QuantizationType(self.type.lower())
+        if self.bits not in (2, 3, 4, 8):
+            raise ValueError(f"Unsupported bits: {self.bits}. Must be 2, 3, 4, or 8")
+        if self.group_size not in (32, 64, 128, 256, -1):
+            raise ValueError(f"Unsupported group_size: {self.group_size}")
 
 
-class InferenceConfig(BaseModel):
-    """Inference engine configuration."""
-    model_path: str = Field(..., description="Path to model files")
-    device: str = Field(default="cpu", description="Device to run on (cpu, cuda, mps)")
-    precision: str = Field(default="bf16", description="Precision mode (fp32, fp16, bf16, int8, int4)")
-    max_context_length: int = Field(default=4096, ge=128, le=32768, description="Maximum context length")
-    max_batch_size: int = Field(default=8, ge=1, le=128, description="Maximum batch size")
-    num_experts: int = Field(default=8, ge=1, le=64, description="Number of experts to load")
-    active_experts: int = Field(default=2, ge=1, le=8, description="Active experts per token")
-    temperature: float = Field(default=0.7, ge=0.0, le=2.0, description="Sampling temperature")
-    top_k: int = Field(default=40, ge=1, le=500, description="Top-k sampling")
-    top_p: float = Field(default=0.9, ge=0.0, le=1.0, description="Top-p sampling")
-    repetition_penalty: float = Field(default=1.1, ge=1.0, le=2.0, description="Repetition penalty")
-    
-    class Config:
-        protected_namespaces = ()
+@dataclass
+class ModelConfig:
+    """Model-specific configuration."""
+    name: str
+    path: str
+    model_type: str = "moe"
+    num_experts: int = 256
+    num_experts_per_token: int = 8
+    hidden_size: int = 8192
+    intermediate_size: int = 28672
+    num_layers: int = 80
+    num_attention_heads: int = 64
+    num_key_value_heads: int = 8
+    vocab_size: int = 151936
+    max_position_embeddings: int = 32768
+    rope_theta: float = 1000000.0
+    rope_scaling: Optional[Dict[str, Any]] = None
+    rms_norm_eps: float = 1e-6
+    tie_word_embeddings: bool = False
+    torch_dtype: str = "float16"
+    quantization: Optional[QuantizationConfig] = None
+    offload_folder: Optional[str] = None
+    use_flash_attn: bool = True
+    use_sdpa: bool = True
+    expert_parallel_size: int = 1
+    tensor_parallel_size: int = 1
+    pipeline_parallel_size: int = 1
+    trust_remote_code: bool = True
+    revision: str = "main"
+
+    def __post_init__(self):
+        if isinstance(self.quantization, dict):
+            self.quantization = QuantizationConfig(**self.quantization)
+        if self.quantization is None:
+            self.quantization = QuantizationConfig()
 
 
-class DatabaseConfig(BaseModel):
-    """Database configuration settings."""
-    url: str = Field(..., description="Database connection URL")
-    pool_size: int = Field(default=10, ge=1, le=100, description="Connection pool size")
-    max_overflow: int = Field(default=20, ge=0, le=100, description="Max overflow connections")
-    echo: bool = Field(default=False, description="Echo SQL statements")
-    pool_pre_ping: bool = Field(default=True, description="Enable connection health checks")
+@dataclass
+class MemoryConfig:
+    """Memory management configuration."""
+    max_memory_gb: float = 32.0
+    cpu_offload_gb: float = 24.0
+    gpu_memory_gb: float = 0.0
+    kv_cache_gb: float = 4.0
+    activation_gb: float = 2.0
+    expert_cache_gb: float = 8.0
+    buffer_gb: float = 1.0
+    enable_memory_mapping: bool = True
+    enable_cpu_offload: bool = True
+    enable_pinned_memory: bool = True
+    prefetch_experts: int = 4
+    expert_cache_policy: str = "lru"  # lru, lfu, fifo
+
+    def __post_init__(self):
+        total = self.cpu_offload_gb + self.gpu_memory_gb + self.kv_cache_gb + \
+                self.activation_gb + self.expert_cache_gb + self.buffer_gb
+        if total > self.max_memory_gb * 1.1:  # 10% tolerance
+            raise ValueError(f"Memory allocation ({total:.1f}GB) exceeds max ({self.max_memory_gb}GB)")
 
 
-class RedisConfig(BaseModel):
-    """Redis configuration settings."""
-    url: str = Field(default="redis://localhost:6379/0", description="Redis connection URL")
-    db: int = Field(default=0, ge=0, le=15, description="Redis database number")
-    password: Optional[str] = Field(default=None, description="Redis password")
-    max_connections: int = Field(default=10, ge=1, le=100, description="Max connection pool size")
-    socket_timeout: float = Field(default=5.0, ge=0.1, description="Socket timeout in seconds")
-    retry_on_timeout: bool = Field(default=True, description="Retry on timeout")
+@dataclass
+class InferenceConfig:
+    """Inference runtime configuration."""
+    max_batch_size: int = 1
+    max_sequence_length: int = 32768
+    max_new_tokens: int = 4096
+    temperature: float = 0.7
+    top_p: float = 0.9
+    top_k: int = 50
+    repetition_penalty: float = 1.1
+    do_sample: bool = True
+    num_beams: int = 1
+    early_stopping: bool = False
+    length_penalty: float = 1.0
+    no_repeat_ngram_size: int = 0
+    use_cache: bool = True
+    return_dict_in_generate: bool = True
+    output_scores: bool = False
+    output_attentions: bool = False
+    output_hidden_states: bool = False
+    stream: bool = False
+    seed: Optional[int] = None
 
 
-class CacheConfig(BaseModel):
-    """Cache configuration settings."""
-    enabled: bool = Field(default=True, description="Enable caching")
-    ttl: int = Field(default=3600, ge=60, le=86400, description="Default TTL in seconds")
-    max_size: int = Field(default=10000, ge=100, le=1000000, description="Max cache entries")
-    prefix: str = Field(default="moe:", description="Cache key prefix")
+@dataclass
+class EngineConfig:
+    """Main engine configuration."""
+    model: ModelConfig
+    memory: MemoryConfig = field(default_factory=MemoryConfig)
+    inference: InferenceConfig = field(default_factory=InferenceConfig)
+    device: DeviceType = DeviceType.AUTO
+    log_level: str = "INFO"
+    log_file: Optional[str] = None
+    enable_profiling: bool = False
+    profile_output_dir: str = "./profiles"
+    compile_model: bool = False
+    compile_mode: str = "reduce-overhead"
+    enable_xformers: bool = False
+    enable_triton: bool = True
+    num_workers: int = 4
+    prefetch_factor: int = 2
+    persistent_workers: bool = True
 
-
-class MonitoringConfig(BaseModel):
-    """Monitoring configuration settings."""
-    enabled: bool = Field(default=True, description="Enable metrics collection")
-    endpoint: str = Field(default="/metrics", description="Prometheus metrics endpoint")
-    bucket_ranges: list[float] = Field(
-        default=[0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1.0, 2.5, 5.0, 10.0],
-        description="Histogram bucket ranges"
-    )
-
-
-class LoggingConfig(BaseModel):
-    """Logging configuration settings."""
-    level: str = Field(default="INFO", description="Log level")
-    format: str = Field(default="structured", description="Log format (structured, console)")
-    file_enabled: bool = Field(default=False, description="Enable file logging")
-    file_path: str = Field(default="logs/app.log", description="Log file path")
-    file_level: str = Field(default="INFO", description="File log level")
-    structured: bool = Field(default=False, description="Use JSON structured logging")
-    colors: bool = Field(default=True, description="Use colored output in console")
-
-
-class SecurityConfig(BaseModel):
-    """Security configuration settings."""
-    api_key: Optional[str] = Field(default=None, description="API key for authentication")
-    jwt_secret: Optional[str] = Field(default=None, description="JWT secret key")
-    jwt_algorithm: str = Field(default="HS256", description="JWT algorithm")
-    cors_origins: list[str] = Field(default=["*"], description="Allowed CORS origins")
-    rate_limit_requests: int = Field(default=100, ge=1, le=10000, description="Rate limit requests")
-    rate_limit_window: int = Field(default=60, ge=1, le=3600, description="Rate limit window seconds")
-
-
-class Config(BaseSettings):
-    """Main configuration model."""
-    model_config = SettingsConfigDict(
-        env_prefix="MOE_",
-        env_file=".env",
-        env_file_encoding="utf-8",
-        case_sensitive=False,
-        extra="ignore",
-    )
-    
-    # Environment
-    environment: str = Field(default="development", description="Environment name")
-    version: str = Field(default="1.0.0", description="Application version")
-    debug: bool = Field(default=False, description="Debug mode")
-    
-    # Sub-configurations
-    server: ServerConfig = Field(default_factory=ServerConfig)
-    inference: InferenceConfig = Field(default_factory=InferenceConfig)
-    database: Optional[DatabaseConfig] = None
-    redis: Optional[RedisConfig] = None
-    cache: CacheConfig = Field(default_factory=CacheConfig)
-    monitoring: MonitoringConfig = Field(default_factory=MonitoringConfig)
-    logging: LoggingConfig = Field(default_factory=LoggingConfig)
-    security: SecurityConfig = Field(default_factory=SecurityConfig)
-    
-    @validator("debug", pre=True)
-    def parse_debug(cls, v: Any) -> bool:
-        """Parse debug flag from string."""
-        if isinstance(v, str):
-            return v.lower() in ("true", "1", "yes", "on")
-        return bool(v)
-    
     @classmethod
-    def from_yaml(cls, config_path: str) -> "Config":
-        """Create Config instance from YAML file.
-        
-        Args:
-            config_path: Path to YAML configuration file
-            
-        Returns:
-            Config instance
-        """
-        config_dict = load_config(config_path)
-        return cls(**config_dict)
-    
-    def to_dict(self) -> Dict[str, Any]:
-        """Convert config to dictionary.
-        
-        Returns:
-            Dictionary representation
-        """
-        return self.model_dump(mode="json")
+    def from_yaml(cls, path: str) -> "EngineConfig":
+        """Load configuration from YAML file."""
+        with open(path, 'r') as f:
+            data = yaml.safe_load(f)
+        return cls.from_dict(data)
 
-
-# Global config instance
-_config: Optional[Config] = None
-
-
-def get_config(config_path: Optional[str] = None) -> Config:
-    """Get the global configuration instance.
-    
-    Args:
-        config_path: Optional path to configuration file
-        
-    Returns:
-        Global Config instance
-    """
-    global _config
-    
-    if _config is None:
-        if config_path:
-            _config = Config.from_yaml(config_path)
+    @classmethod
+    def from_dict(cls, data: Dict[str, Any]) -> "EngineConfig":
+        """Create configuration from dictionary."""
+        model_data = data.get('model', {})
+        if isinstance(model_data, dict):
+            model_config = ModelConfig(**model_data)
         else:
-            env = os.getenv("MOE_ENVIRONMENT", "development")
-            config_path = get_config_path(env)
-            _config = Config.from_yaml(config_path)
-    
-    return _config
-
-
-def reload_config(config_path: Optional[str] = None) -> Config:
-    """Reload the global configuration.
-    
-    Args:
-        config_path: Optional path to configuration file
+            model_config = model_data
         
-    Returns:
-        Reloading Config instance
-    """
-    global _config
-    _config = None
-    return get_config(config_path)
+        memory_config = MemoryConfig(**data.get('memory', {}))
+        inference_config = InferenceConfig(**data.get('inference', {}))
+        
+        device = data.get('device', DeviceType.AUTO)
+        if isinstance(device, str):
+            device = DeviceType(device.lower())
+        
+        return cls(
+            model=model_config,
+            memory=memory_config,
+            inference=inference_config,
+            device=device,
+            log_level=data.get('log_level', 'INFO'),
+            log_file=data.get('log_file'),
+            enable_profiling=data.get('enable_profiling', False),
+            profile_output_dir=data.get('profile_output_dir', './profiles'),
+            compile_model=data.get('compile_model', False),
+            compile_mode=data.get('compile_mode', 'reduce-overhead'),
+            enable_xformers=data.get('enable_xformers', False),
+            enable_triton=data.get('enable_triton', True),
+            num_workers=data.get('num_workers', 4),
+            prefetch_factor=data.get('prefetch_factor', 2),
+            persistent_workers=data.get('persistent_workers', True),
+        )
+
+    def to_dict(self) -> Dict[str, Any]:
+        """Convert configuration to dictionary."""
+        return {
+            'model': self.model.__dict__,
+            'memory': self.memory.__dict__,
+            'inference': self.inference.__dict__,
+            'device': self.device.value,
+            'log_level': self.log_level,
+            'log_file': self.log_file,
+            'enable_profiling': self.enable_profiling,
+            'profile_output_dir': self.profile_output_dir,
+            'compile_model': self.compile_model,
+            'compile_mode': self.compile_mode,
+            'enable_xformers': self.enable_xformers,
+            'enable_triton': self.enable_triton,
+            'num_workers': self.num_workers,
+            'prefetch_factor': self.prefetch_factor,
+            'persistent_workers': self.persistent_workers,
+        }
+
+    def save_yaml(self, path: str):
+        """Save configuration to YAML file."""
+        with open(path, 'w') as f:
+            yaml.dump(self.to_dict(), f, default_flow_style=False)
+
+
+def load_config(config_path: Optional[str] = None) -> EngineConfig:
+    """Load configuration from file or environment."""
+    if config_path and os.path.exists(config_path):
+        return EngineConfig.from_yaml(config_path)
+    
+    # Check environment variable
+    env_config = os.environ.get('MOE_ENGINE_CONFIG')
+    if env_config and os.path.exists(env_config):
+        return EngineConfig.from_yaml(env_config)
+    
+    # Check default locations
+    default_paths = [
+        'config/default.yaml',
+        'config/prod.yaml',
+        './config.yaml',
+        './config.yml',
+    ]
+    for path in default_paths:
+        if os.path.exists(path):
+            return EngineConfig.from_yaml(path)
+    
+    # Return default configuration
+    return EngineConfig(
+        model=ModelConfig(
+            name="default",
+            path="./models",
+        )
+    )
