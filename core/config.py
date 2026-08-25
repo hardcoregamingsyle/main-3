@@ -1,251 +1,307 @@
 """
 Configuration management for MoE Ultra Engine.
-Supports YAML config files, environment variables, and programmatic configuration.
+
+Handles loading, validation, and merging of configuration from YAML files,
+environment variables, and programmatic overrides.
 """
 
 import os
-from pathlib import Path
-from typing import Optional, Dict, Any, List
-from dataclasses import dataclass, field
-from enum import Enum
 import yaml
-
-
-class QuantizationType(str, Enum):
-    """Supported quantization types."""
-    NONE = "none"
-    INT8 = "int8"
-    INT4 = "int4"
-    NF4 = "nf4"
-    FP8 = "fp8"
-    GPTQ = "gptq"
-    AWQ = "awq"
-
-
-class DeviceType(str, Enum):
-    """Supported device types."""
-    CPU = "cpu"
-    CUDA = "cuda"
-    MPS = "mps"
-    AUTO = "auto"
+from pathlib import Path
+from typing import Any, Dict, List, Optional, Union
+from dataclasses import dataclass, field, asdict
+from copy import deepcopy
 
 
 @dataclass
-class QuantizationConfig:
-    """Quantization configuration for model weights."""
-    type: QuantizationType = QuantizationType.INT4
-    group_size: int = 128
-    damp_percent: float = 0.01
-    desc_act: bool = False
-    static_groups: bool = False
-    sym: bool = True
-    true_sequential: bool = True
-    bits: int = 4
-
-    def __post_init__(self):
-        if isinstance(self.type, str):
-            self.type = QuantizationType(self.type.lower())
-        if self.bits not in (2, 3, 4, 8):
-            raise ValueError(f"Unsupported bits: {self.bits}. Must be 2, 3, 4, or 8")
-        if self.group_size not in (32, 64, 128, 256, -1):
-            raise ValueError(f"Unsupported group_size: {self.group_size}")
-
-
-@dataclass
-class ModelConfig:
-    """Model-specific configuration."""
-    name: str
-    path: str
-    model_type: str = "moe"
-    num_experts: int = 256
-    num_experts_per_token: int = 8
-    hidden_size: int = 8192
-    intermediate_size: int = 28672
-    num_layers: int = 80
-    num_attention_heads: int = 64
-    num_key_value_heads: int = 8
-    vocab_size: int = 151936
-    max_position_embeddings: int = 32768
-    rope_theta: float = 1000000.0
+class ExpertConfig:
+    """Configuration for a single expert in the MoE model."""
+    expert_id: int
+    layer_id: int
+    hidden_size: int
+    intermediate_size: int
+    num_attention_heads: int
+    num_key_value_heads: int
+    rope_theta: float = 10000.0
     rope_scaling: Optional[Dict[str, Any]] = None
-    rms_norm_eps: float = 1e-6
-    tie_word_embeddings: bool = False
-    torch_dtype: str = "float16"
-    quantization: Optional[QuantizationConfig] = None
-    offload_folder: Optional[str] = None
-    use_flash_attn: bool = True
-    use_sdpa: bool = True
-    expert_parallel_size: int = 1
-    tensor_parallel_size: int = 1
-    pipeline_parallel_size: int = 1
-    trust_remote_code: bool = True
-    revision: str = "main"
+    activation_function: str = "silu"
+    attention_dropout: float = 0.0
+    hidden_dropout: float = 0.0
+    quantization: str = "int4"  # int4, int8, fp16, fp32
+    offload_to_cpu: bool = True
+    priority: int = 0  # Higher = keep in memory longer
 
     def __post_init__(self):
-        if isinstance(self.quantization, dict):
-            self.quantization = QuantizationConfig(**self.quantization)
-        if self.quantization is None:
-            self.quantization = QuantizationConfig()
+        if self.quantization not in ("int4", "int8", "fp16", "fp32"):
+            raise ValueError(f"Invalid quantization: {self.quantization}")
+        if self.hidden_size <= 0 or self.intermediate_size <= 0:
+            raise ValueError("hidden_size and intermediate_size must be positive")
+        if self.num_attention_heads <= 0 or self.num_key_value_heads <= 0:
+            raise ValueError("Attention heads must be positive")
+        if self.num_key_value_heads > self.num_attention_heads:
+            raise ValueError("num_key_value_heads cannot exceed num_attention_heads")
+
+    def memory_footprint_mb(self) -> float:
+        """Estimate memory footprint in MB for this expert."""
+        # Parameters: gate_proj + up_proj + down_proj + attention
+        param_count = (
+            2 * self.hidden_size * self.intermediate_size +  # gate + up
+            self.hidden_size * self.intermediate_size +         # down
+            4 * self.hidden_size * self.hidden_size             # qkv + o_proj (approx)
+        )
+        bytes_per_param = {"int4": 0.5, "int8": 1.0, "fp16": 2.0, "fp32": 4.0}[self.quantization]
+        return (param_count * bytes_per_param) / (1024 * 1024)
 
 
 @dataclass
 class MemoryConfig:
     """Memory management configuration."""
-    max_memory_gb: float = 32.0
-    cpu_offload_gb: float = 24.0
-    gpu_memory_gb: float = 0.0
-    kv_cache_gb: float = 4.0
-    activation_gb: float = 2.0
-    expert_cache_gb: float = 8.0
-    buffer_gb: float = 1.0
-    enable_memory_mapping: bool = True
-    enable_cpu_offload: bool = True
-    enable_pinned_memory: bool = True
-    prefetch_experts: int = 4
-    expert_cache_policy: str = "lru"  # lru, lfu, fifo
+    total_ram_gb: float = 32.0
+    reserved_ram_gb: float = 4.0  # OS + other processes
+    expert_cache_gb: float = 20.0  # For expert weights
+    activation_cache_gb: float = 4.0  # For intermediate activations
+    kv_cache_gb: float = 4.0  # For KV cache
+    swap_dir: str = "/tmp/moe_swap"
+    enable_swap: bool = True
+    swap_compression: str = "lz4"  # lz4, zstd, none
+    prefetch_experts: int = 2  # Number of experts to prefetch
+    eviction_policy: str = "lru"  # lru, lfu, priority
+    memory_mapped: bool = True
 
     def __post_init__(self):
-        total = self.cpu_offload_gb + self.gpu_memory_gb + self.kv_cache_gb + \
-                self.activation_gb + self.expert_cache_gb + self.buffer_gb
-        if total > self.max_memory_gb * 1.1:  # 10% tolerance
-            raise ValueError(f"Memory allocation ({total:.1f}GB) exceeds max ({self.max_memory_gb}GB)")
+        if self.total_ram_gb <= 0:
+            raise ValueError("total_ram_gb must be positive")
+        if self.reserved_ram_gb >= self.total_ram_gb:
+            raise ValueError("reserved_ram_gb must be less than total_ram_gb")
+        available = self.total_ram_gb - self.reserved_ram_gb
+        allocated = self.expert_cache_gb + self.activation_cache_gb + self.kv_cache_gb
+        if allocated > available:
+            raise ValueError(f"Allocated memory ({allocated}GB) exceeds available ({available}GB)")
+        if self.swap_compression not in ("lz4", "zstd", "none"):
+            raise ValueError(f"Invalid swap_compression: {self.swap_compression}")
+        if self.eviction_policy not in ("lru", "lfu", "priority"):
+            raise ValueError(f"Invalid eviction_policy: {self.eviction_policy}")
+        Path(self.swap_dir).mkdir(parents=True, exist_ok=True)
 
-
-@dataclass
-class InferenceConfig:
-    """Inference runtime configuration."""
-    max_batch_size: int = 1
-    max_sequence_length: int = 32768
-    max_new_tokens: int = 4096
-    temperature: float = 0.7
-    top_p: float = 0.9
-    top_k: int = 50
-    repetition_penalty: float = 1.1
-    do_sample: bool = True
-    num_beams: int = 1
-    early_stopping: bool = False
-    length_penalty: float = 1.0
-    no_repeat_ngram_size: int = 0
-    use_cache: bool = True
-    return_dict_in_generate: bool = True
-    output_scores: bool = False
-    output_attentions: bool = False
-    output_hidden_states: bool = False
-    stream: bool = False
-    seed: Optional[int] = None
+    @property
+    def available_ram_gb(self) -> float:
+        return self.total_ram_gb - self.reserved_ram_gb
 
 
 @dataclass
 class EngineConfig:
     """Main engine configuration."""
-    model: ModelConfig
+    model_path: str
+    model_name: str = "moe-model"
+    num_layers: int = 80
+    num_experts_per_layer: int = 256
+    num_experts_per_token: int = 8
+    hidden_size: int = 8192
+    intermediate_size: int = 29568
+    num_attention_heads: int = 64
+    num_key_value_heads: int = 8
+    vocab_size: int = 151936
+    max_sequence_length: int = 32768
+    rope_theta: float = 1000000.0
+    rope_scaling: Optional[Dict[str, Any]] = None
+    expert_configs: List[ExpertConfig] = field(default_factory=list)
     memory: MemoryConfig = field(default_factory=MemoryConfig)
-    inference: InferenceConfig = field(default_factory=InferenceConfig)
-    device: DeviceType = DeviceType.AUTO
-    log_level: str = "INFO"
-    log_file: Optional[str] = None
-    enable_profiling: bool = False
-    profile_output_dir: str = "./profiles"
-    compile_model: bool = False
-    compile_mode: str = "reduce-overhead"
+    dtype: str = "float16"  # float16, bfloat16, float32
+    device: str = "cpu"  # cpu, cuda, mps
+    num_threads: int = 0  # 0 = auto
+    batch_size: int = 1
+    enable_flash_attention: bool = False
     enable_xformers: bool = False
-    enable_triton: bool = True
-    num_workers: int = 4
-    prefetch_factor: int = 2
-    persistent_workers: bool = True
+    compile_model: bool = False
+    log_level: str = "INFO"
+    metrics_enabled: bool = True
+    metrics_port: int = 9090
 
+    def __post_init__(self):
+        if not Path(self.model_path).exists():
+            raise ValueError(f"Model path does not exist: {self.model_path}")
+        if self.num_layers <= 0:
+            raise ValueError("num_layers must be positive")
+        if self.num_experts_per_layer <= 0:
+            raise ValueError("num_experts_per_layer must be positive")
+        if self.num_experts_per_token <= 0 or self.num_experts_per_token > self.num_experts_per_layer:
+            raise ValueError("num_experts_per_token must be in [1, num_experts_per_layer]")
+        if self.dtype not in ("float16", "bfloat16", "float32"):
+            raise ValueError(f"Invalid dtype: {self.dtype}")
+        if self.device not in ("cpu", "cuda", "mps"):
+            raise ValueError(f"Invalid device: {self.device}")
+        if self.batch_size <= 0:
+            raise ValueError("batch_size must be positive")
+
+    def get_expert_config(self, layer_id: int, expert_id: int) -> ExpertConfig:
+        """Get expert config, creating default if not explicitly configured."""
+        for ec in self.expert_configs:
+            if ec.layer_id == layer_id and ec.expert_id == expert_id:
+                return ec
+        # Return default config
+        return ExpertConfig(
+            expert_id=expert_id,
+            layer_id=layer_id,
+            hidden_size=self.hidden_size,
+            intermediate_size=self.intermediate_size,
+            num_attention_heads=self.num_attention_heads,
+            num_key_value_heads=self.num_key_value_heads,
+            rope_theta=self.rope_theta,
+            rope_scaling=self.rope_scaling,
+        )
+
+    def estimate_total_memory_gb(self) -> float:
+        """Estimate total model memory footprint in GB."""
+        total_params = 0
+        for layer_id in range(self.num_layers):
+            for expert_id in range(self.num_experts_per_layer):
+                ec = self.get_expert_config(layer_id, expert_id)
+                total_params += ec.memory_footprint_mb()
+        return total_params / 1024
+
+
+@dataclass
+class MoEConfig:
+    """Top-level configuration container."""
+    engine: EngineConfig
+    
     @classmethod
-    def from_yaml(cls, path: str) -> "EngineConfig":
-        """Load configuration from YAML file."""
+    def from_yaml(cls, path: Union[str, Path], overrides: Optional[Dict[str, Any]] = None) -> "MoEConfig":
+        """Load configuration from YAML file with optional overrides."""
+        path = Path(path)
+        if not path.exists():
+            raise FileNotFoundError(f"Config file not found: {path}")
+        
         with open(path, 'r') as f:
-            data = yaml.safe_load(f)
-        return cls.from_dict(data)
-
+            data = yaml.safe_load(f) or {}
+        
+        # Apply environment variable overrides
+        data = cls._apply_env_overrides(data)
+        
+        # Apply programmatic overrides
+        if overrides:
+            data = cls._deep_merge(data, overrides)
+        
+        return cls._from_dict(data)
+    
     @classmethod
-    def from_dict(cls, data: Dict[str, Any]) -> "EngineConfig":
-        """Create configuration from dictionary."""
-        model_data = data.get('model', {})
-        if isinstance(model_data, dict):
-            model_config = ModelConfig(**model_data)
-        else:
-            model_config = model_data
-        
-        memory_config = MemoryConfig(**data.get('memory', {}))
-        inference_config = InferenceConfig(**data.get('inference', {}))
-        
-        device = data.get('device', DeviceType.AUTO)
-        if isinstance(device, str):
-            device = DeviceType(device.lower())
-        
-        return cls(
-            model=model_config,
-            memory=memory_config,
-            inference=inference_config,
-            device=device,
-            log_level=data.get('log_level', 'INFO'),
-            log_file=data.get('log_file'),
-            enable_profiling=data.get('enable_profiling', False),
-            profile_output_dir=data.get('profile_output_dir', './profiles'),
-            compile_model=data.get('compile_model', False),
-            compile_mode=data.get('compile_mode', 'reduce-overhead'),
-            enable_xformers=data.get('enable_xformers', False),
-            enable_triton=data.get('enable_triton', True),
-            num_workers=data.get('num_workers', 4),
-            prefetch_factor=data.get('prefetch_factor', 2),
-            persistent_workers=data.get('persistent_workers', True),
-        )
-
-    def to_dict(self) -> Dict[str, Any]:
-        """Convert configuration to dictionary."""
-        return {
-            'model': self.model.__dict__,
-            'memory': self.memory.__dict__,
-            'inference': self.inference.__dict__,
-            'device': self.device.value,
-            'log_level': self.log_level,
-            'log_file': self.log_file,
-            'enable_profiling': self.enable_profiling,
-            'profile_output_dir': self.profile_output_dir,
-            'compile_model': self.compile_model,
-            'compile_mode': self.compile_mode,
-            'enable_xformers': self.enable_xformers,
-            'enable_triton': self.enable_triton,
-            'num_workers': self.num_workers,
-            'prefetch_factor': self.prefetch_factor,
-            'persistent_workers': self.persistent_workers,
+    def _apply_env_overrides(cls, data: Dict[str, Any]) -> Dict[str, Any]:
+        """Apply environment variable overrides (MOE_* prefix)."""
+        env_mapping = {
+            'MOE_MODEL_PATH': 'engine.model_path',
+            'MOE_MODEL_NAME': 'engine.model_name',
+            'MOE_NUM_LAYERS': 'engine.num_layers',
+            'MOE_NUM_EXPERTS_PER_LAYER': 'engine.num_experts_per_layer',
+            'MOE_NUM_EXPERTS_PER_TOKEN': 'engine.num_experts_per_token',
+            'MOE_HIDDEN_SIZE': 'engine.hidden_size',
+            'MOE_INTERMEDIATE_SIZE': 'engine.intermediate_size',
+            'MOE_NUM_ATTENTION_HEADS': 'engine.num_attention_heads',
+            'MOE_NUM_KEY_VALUE_HEADS': 'engine.num_key_value_heads',
+            'MOE_VOCAB_SIZE': 'engine.vocab_size',
+            'MOE_MAX_SEQUENCE_LENGTH': 'engine.max_sequence_length',
+            'MOE_ROPE_THETA': 'engine.rope_theta',
+            'MOE_DTYPE': 'engine.dtype',
+            'MOE_DEVICE': 'engine.device',
+            'MOE_NUM_THREADS': 'engine.num_threads',
+            'MOE_BATCH_SIZE': 'engine.batch_size',
+            'MOE_TOTAL_RAM_GB': 'engine.memory.total_ram_gb',
+            'MOE_RESERVED_RAM_GB': 'engine.memory.reserved_ram_gb',
+            'MOE_EXPERT_CACHE_GB': 'engine.memory.expert_cache_gb',
+            'MOE_ACTIVATION_CACHE_GB': 'engine.memory.activation_cache_gb',
+            'MOE_KV_CACHE_GB': 'engine.memory.kv_cache_gb',
+            'MOE_SWAP_DIR': 'engine.memory.swap_dir',
+            'MOE_ENABLE_SWAP': 'engine.memory.enable_swap',
+            'MOE_SWAP_COMPRESSION': 'engine.memory.swap_compression',
+            'MOE_PREFETCH_EXPERTS': 'engine.memory.prefetch_experts',
+            'MOE_EVICTION_POLICY': 'engine.memory.eviction_policy',
+            'MOE_LOG_LEVEL': 'engine.log_level',
+            'MOE_METRICS_ENABLED': 'engine.metrics_enabled',
+            'MOE_METRICS_PORT': 'engine.metrics_port',
         }
-
-    def save_yaml(self, path: str):
-        """Save configuration to YAML file."""
-        with open(path, 'w') as f:
-            yaml.dump(self.to_dict(), f, default_flow_style=False)
-
-
-def load_config(config_path: Optional[str] = None) -> EngineConfig:
-    """Load configuration from file or environment."""
-    if config_path and os.path.exists(config_path):
-        return EngineConfig.from_yaml(config_path)
+        
+        result = deepcopy(data)
+        for env_var, config_path in env_mapping.items():
+            value = os.environ.get(env_var)
+            if value is not None:
+                cls._set_nested(result, config_path.split('.'), cls._parse_value(value))
+        return result
     
-    # Check environment variable
-    env_config = os.environ.get('MOE_ENGINE_CONFIG')
-    if env_config and os.path.exists(env_config):
-        return EngineConfig.from_yaml(env_config)
+    @staticmethod
+    def _parse_value(value: str) -> Any:
+        """Parse string value to appropriate type."""
+        # Boolean
+        if value.lower() in ('true', 'false'):
+            return value.lower() == 'true'
+        # Integer
+        try:
+            return int(value)
+        except ValueError:
+            pass
+        # Float
+        try:
+            return float(value)
+        except ValueError:
+            pass
+        # JSON
+        if value.startswith('{') or value.startswith('['):
+            import json
+            return json.loads(value)
+        return value
     
-    # Check default locations
-    default_paths = [
-        'config/default.yaml',
-        'config/prod.yaml',
-        './config.yaml',
-        './config.yml',
-    ]
-    for path in default_paths:
-        if os.path.exists(path):
-            return EngineConfig.from_yaml(path)
+    @staticmethod
+    def _set_nested(data: Dict[str, Any], keys: List[str], value: Any) -> None:
+        """Set nested dictionary value."""
+        for key in keys[:-1]:
+            data = data.setdefault(key, {})
+        data[keys[-1]] = value
     
-    # Return default configuration
-    return EngineConfig(
-        model=ModelConfig(
-            name="default",
-            path="./models",
+    @staticmethod
+    def _deep_merge(base: Dict[str, Any], override: Dict[str, Any]) -> Dict[str, Any]:
+        """Deep merge two dictionaries."""
+        result = deepcopy(base)
+        for key, value in override.items():
+            if key in result and isinstance(result[key], dict) and isinstance(value, dict):
+                result[key] = MoEConfig._deep_merge(result[key], value)
+            else:
+                result[key] = deepcopy(value)
+        return result
+    
+    @classmethod
+    def _from_dict(cls, data: Dict[str, Any]) -> "MoEConfig":
+        """Create MoEConfig from dictionary."""
+        engine_data = data.get('engine', {})
+        
+        # Parse expert configs
+        expert_configs = []
+        for ec_data in engine_data.get('expert_configs', []):
+            expert_configs.append(ExpertConfig(**ec_data))
+        
+        # Parse memory config
+        memory_data = engine_data.get('memory', {})
+        memory = MemoryConfig(**memory_data)
+        
+        # Create engine config
+        engine = EngineConfig(
+            expert_configs=expert_configs,
+            memory=memory,
+            **{k: v for k, v in engine_data.items() if k not in ('expert_configs', 'memory')}
         )
-    )
+        
+        return cls(engine=engine)
+    
+    def to_yaml(self, path: Union[str, Path]) -> None:
+        """Save configuration to YAML file."""
+        path = Path(path)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with open(path, 'w') as f:
+            yaml.dump(self.to_dict(), f, default_flow_style=False, sort_keys=False)
+    
+    def to_dict(self) -> Dict[str, Any]:
+        """Convert to dictionary."""
+        return {
+            'engine': {
+                **asdict(self.engine),
+                'expert_configs': [asdict(ec) for ec in self.engine.expert_configs],
+                'memory': asdict(self.engine.memory),
+            }
+        }
