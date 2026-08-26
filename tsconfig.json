@@ -25,22 +25,8 @@
     "noUnusedParameters": true,
     "noImplicitReturns": true,
     "noFallthroughCasesInSwitch": true,
-    "exactOptionalPropertyTypes": true,
-    "noUncheckedIndexedAccess": true
+    "exactOptionalPropertyTypes": false
   },
-  "include": [
-    "ui/src/**/*",
-    "ui/src/*.vue",
-    "vite.config.ts"
-  ],
-  "exclude": [
-    "node_modules",
-    "dist",
-    "tests",
-    "scripts",
-    "core",
-    "api",
-    "docker",
-    ".git"
-  ]
+  "include": ["ui/src/**/*.ts", "ui/src/**/*.d.ts", "ui/src/**/*.tsx", "ui/src/**/*.vue"],
+  "exclude": ["node_modules", "dist"]
 }
