@@ -1,239 +1,295 @@
 """
 Configuration management for MoE Ultra Engine.
 
-Uses Pydantic Settings for type-safe configuration with support for:
-- YAML config files (default.yaml, prod.yaml)
-- Environment variables
-- CLI overrides
+Supports YAML config files, environment variable overrides, and validation.
 """
 
 import os
+import yaml
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Union
+from dataclasses import dataclass, field, asdict
+from typing import Optional, Dict, Any, List
 from functools import lru_cache
 
-import yaml
-from pydantic import BaseModel, Field, field_validator, model_validator
-from pydantic_settings import BaseSettings, SettingsConfigDict
 
-
-class ModelConfig(BaseModel):
+@dataclass
+class ModelConfig:
     """Model-specific configuration."""
-    name: str = Field(default="qwen-3.8-max", description="Model identifier")
-    path: str = Field(default="./models", description="Path to model files")
-    max_seq_len: int = Field(default=8192, ge=512, le=32768, description="Maximum sequence length")
-    dtype: str = Field(default="float16", pattern="^(float16|bfloat16|float32|int8|int4)$")
-    quantization: str = Field(default="int4", pattern="^(none|int8|int4|gptq|awq)$")
-    expert_parallelism: int = Field(default=1, ge=1, le=8, description="Number of GPUs for expert parallelism")
-    tensor_parallelism: int = Field(default=1, ge=1, le=8, description="Number of GPUs for tensor parallelism")
-    pipeline_parallelism: int = Field(default=1, ge=1, le=8, description="Number of GPUs for pipeline parallelism")
-    rope_theta: float = Field(default=1000000.0, description="RoPE theta parameter")
-    rope_scaling: Optional[Dict[str, Any]] = Field(default=None, description="RoPE scaling configuration")
+    name: str = "qwen-3.8-max"
+    path: str = "./models/qwen-3.8-max"
+    dtype: str = "fp16"  # fp16, bf16, int8, int4
+    context_length: int = 32768
+    vocab_size: int = 151936
+    hidden_size: int = 8192
+    num_layers: int = 80
+    num_attention_heads: int = 64
+    num_key_value_heads: int = 8
+    intermediate_size: int = 29568
+    num_experts: int = 256
+    experts_per_token: int = 8
+    rope_theta: float = 1000000.0
+    rope_scaling: Optional[Dict[str, Any]] = None
+    tie_word_embeddings: bool = False
+    
+    def __post_init__(self):
+        if self.rope_scaling is None:
+            self.rope_scaling = {"type": "linear", "factor": 1.0}
+        valid_dtypes = ["fp32", "fp16", "bf16", "int8", "int4"]
+        if self.dtype not in valid_dtypes:
+            raise ValueError(f"dtype must be one of {valid_dtypes}, got {self.dtype}")
+        if self.experts_per_token > self.num_experts:
+            raise ValueError("experts_per_token cannot exceed num_experts")
 
-    @field_validator("path")
+
+@dataclass
+class EngineConfig:
+    """Inference engine configuration."""
+    max_batch_size: int = 1
+    max_sequence_length: int = 32768
+    kv_cache_dtype: str = "fp16"
+    enable_prefix_caching: bool = True
+    enable_chunked_prefill: bool = True
+    chunked_prefill_size: int = 2048
+    enable_speculative_decoding: bool = False
+    speculative_draft_model: Optional[str] = None
+    num_speculative_tokens: int = 4
+    temperature: float = 0.7
+    top_p: float = 0.9
+    top_k: int = 50
+    repetition_penalty: float = 1.1
+    max_new_tokens: int = 2048
+    stop_sequences: List[str] = field(default_factory=list)
+    seed: Optional[int] = None
+    
+    def __post_init__(self):
+        if self.max_batch_size < 1:
+            raise ValueError("max_batch_size must be >= 1")
+        if self.temperature < 0:
+            raise ValueError("temperature must be >= 0")
+        if not 0 < self.top_p <= 1:
+            raise ValueError("top_p must be in (0, 1]")
+        if self.top_k < 0:
+            raise ValueError("top_k must be >= 0")
+        if self.repetition_penalty < 1.0:
+            raise ValueError("repetition_penalty must be >= 1.0")
+
+
+@dataclass
+class HardwareConfig:
+    """Hardware and memory configuration."""
+    device: str = "cpu"  # cpu, cuda, mps, xpu
+    cpu_threads: int = 0  # 0 = auto
+    memory_limit_gb: float = 32.0
+    offload_folder: str = "./offload"
+    enable_mmap: bool = True
+    enable_mlock: bool = False
+    numa_nodes: List[int] = field(default_factory=list)
+    gpu_layers: int = 0
+    gpu_memory_fraction: float = 0.9
+    tensor_parallel_size: int = 1
+    pipeline_parallel_size: int = 1
+    expert_parallel_size: int = 1
+    
+    def __post_init__(self):
+        if self.memory_limit_gb <= 0:
+            raise ValueError("memory_limit_gb must be > 0")
+        if not 0 < self.gpu_memory_fraction <= 1:
+            raise ValueError("gpu_memory_fraction must be in (0, 1]")
+        valid_devices = ["cpu", "cuda", "mps", "xpu"]
+        if self.device not in valid_devices:
+            raise ValueError(f"device must be one of {valid_devices}, got {self.device}")
+
+
+@dataclass
+class Config:
+    """Main configuration container."""
+    model: ModelConfig = field(default_factory=ModelConfig)
+    engine: EngineConfig = field(default_factory=EngineConfig)
+    hardware: HardwareConfig = field(default_factory=HardwareConfig)
+    log_level: str = "INFO"
+    log_format: str = "json"
+    log_file: Optional[str] = None
+    metrics_enabled: bool = True
+    metrics_port: int = 9090
+    api_host: str = "0.0.0.0"
+    api_port: int = 8000
+    api_workers: int = 1
+    
     @classmethod
-    def validate_path(cls, v: str) -> str:
-        path = Path(v).expanduser().resolve()
-        if not path.exists():
-            path.mkdir(parents=True, exist_ok=True)
-        return str(path)
-
-
-class MemoryConfig(BaseModel):
-    """Memory management configuration."""
-    max_ram_gb: float = Field(default=32.0, gt=0, le=512, description="Maximum RAM to use (GB)")
-    max_vram_gb: float = Field(default=0.0, ge=0, le=512, description="Maximum VRAM to use (GB), 0 = auto")
-    offload_to_cpu: bool = Field(default=True, description="Offload inactive experts to CPU")
-    offload_to_disk: bool = Field(default=False, description="Offload to disk when RAM full")
-    disk_offload_path: str = Field(default="./offload", description="Path for disk offloading")
-    expert_cache_size: int = Field(default=4, ge=1, le=64, description="Number of experts to keep in RAM")
-    kv_cache_dtype: str = Field(default="float16", pattern="^(float16|bfloat16|float32|int8)$")
-    kv_cache_quantization: str = Field(default="none", pattern="^(none|int8|int4)$")
-    page_size: int = Field(default=16, ge=1, le=256, description="Paged attention page size")
-    max_pages: int = Field(default=0, ge=0, description="Max pages for KV cache, 0 = auto")
-
-    @field_validator("disk_offload_path")
+    def from_yaml(cls, path: str) -> "Config":
+        """Load configuration from YAML file."""
+        with open(path, 'r') as f:
+            data = yaml.safe_load(f) or {}
+        return cls.from_dict(data)
+    
     @classmethod
-    def validate_disk_path(cls, v: str) -> str:
-        path = Path(v).expanduser().resolve()
-        path.mkdir(parents=True, exist_ok=True)
-        return str(path)
-
-
-class InferenceConfig(BaseModel):
-    """Inference runtime configuration."""
-    batch_size: int = Field(default=1, ge=1, le=256, description="Batch size for inference")
-    max_tokens: int = Field(default=2048, ge=1, le=32768, description="Maximum tokens to generate")
-    temperature: float = Field(default=0.7, ge=0.0, le=2.0, description="Sampling temperature")
-    top_p: float = Field(default=0.9, ge=0.0, le=1.0, description="Top-p nucleus sampling")
-    top_k: int = Field(default=50, ge=1, le=1000, description="Top-k sampling")
-    repetition_penalty: float = Field(default=1.1, ge=1.0, le=2.0, description="Repetition penalty")
-    presence_penalty: float = Field(default=0.0, ge=-2.0, le=2.0, description="Presence penalty")
-    frequency_penalty: float = Field(default=0.0, ge=-2.0, le=2.0, description="Frequency penalty")
-    stop_sequences: List[str] = Field(default_factory=list, description="Stop sequences")
-    seed: Optional[int] = Field(default=None, description="Random seed for reproducibility")
-    stream: bool = Field(default=True, description="Stream tokens as they're generated")
-    use_flash_attention: bool = Field(default=True, description="Use flash attention if available")
-    use_paged_attention: bool = Field(default=True, description="Use paged attention for KV cache")
-    speculative_decoding: bool = Field(default=False, description="Enable speculative decoding")
-    draft_model_path: Optional[str] = Field(default=None, description="Path to draft model for speculative decoding")
-
-
-class ServerConfig(BaseModel):
-    """API server configuration."""
-    host: str = Field(default="0.0.0.0", description="Server host")
-    port: int = Field(default=3000, ge=1, le=65535, description="Server port")
-    workers: int = Field(default=1, ge=1, le=32, description="Number of worker processes")
-    timeout: int = Field(default=300, ge=1, le=3600, description="Request timeout (seconds)")
-    max_request_size: int = Field(default=100_000_000, description="Max request size in bytes")
-    cors_origins: List[str] = Field(default_factory=lambda: ["*"], description="CORS allowed origins")
-    cors_methods: List[str] = Field(default_factory=lambda: ["GET", "POST", "OPTIONS"], description="CORS allowed methods")
-    cors_headers: List[str] = Field(default_factory=lambda: ["*"], description="CORS allowed headers")
-    rate_limit_requests: int = Field(default=100, ge=1, description="Rate limit requests per window")
-    rate_limit_window: int = Field(default=60, ge=1, description="Rate limit window (seconds)")
-    enable_metrics: bool = Field(default=True, description="Enable Prometheus metrics")
-    metrics_path: str = Field(default="/metrics", description="Metrics endpoint path")
-    log_level: str = Field(default="INFO", pattern="^(DEBUG|INFO|WARNING|ERROR|CRITICAL)$")
-    access_log: bool = Field(default=True, description="Enable access logging")
-
-
-class MonitoringConfig(BaseModel):
-    """Monitoring and observability configuration."""
-    prometheus_port: int = Field(default=9090, ge=1, le=65535, description="Prometheus exporter port")
-    grafana_port: int = Field(default=3001, ge=1, le=65535, description="Grafana port")
-    enable_tracing: bool = Field(default=False, description="Enable distributed tracing")
-    jaeger_endpoint: Optional[str] = Field(default=None, description="Jaeger collector endpoint")
-    log_format: str = Field(default="json", pattern="^(json|text)$")
-    log_file: Optional[str] = Field(default="./logs/moe-engine.log", description="Log file path")
-    log_rotation: str = Field(default="1 day", description="Log rotation interval")
-    log_retention: str = Field(default="30 days", description="Log retention period")
-
-    @field_validator("log_file")
-    @classmethod
-    def validate_log_file(cls, v: Optional[str]) -> Optional[str]:
-        if v:
-            path = Path(v).expanduser().resolve()
-            path.parent.mkdir(parents=True, exist_ok=True)
-            return str(path)
-        return v
-
-
-class SecurityConfig(BaseModel):
-    """Security configuration."""
-    api_key_enabled: bool = Field(default=False, description="Enable API key authentication")
-    api_keys: List[str] = Field(default_factory=list, description="Valid API keys")
-    jwt_secret: Optional[str] = Field(default=None, description="JWT secret for token auth")
-    jwt_algorithm: str = Field(default="HS256", description="JWT algorithm")
-    jwt_expiry_hours: int = Field(default=24, ge=1, le=168, description="JWT expiry in hours")
-    tls_enabled: bool = Field(default=False, description="Enable TLS")
-    tls_cert_path: Optional[str] = Field(default=None, description="TLS certificate path")
-    tls_key_path: Optional[str] = Field(default=None, description="TLS key path")
-
-
-class Config(BaseSettings):
-    """Main configuration class combining all sub-configurations."""
-    model_config = SettingsConfigDict(
-        env_file=".env",
-        env_file_encoding="utf-8",
-        env_nested_delimiter="__",
-        extra="ignore",
-        case_sensitive=False,
-    )
-
-    model: ModelConfig = Field(default_factory=ModelConfig)
-    memory: MemoryConfig = Field(default_factory=MemoryConfig)
-    inference: InferenceConfig = Field(default_factory=InferenceConfig)
-    server: ServerConfig = Field(default_factory=ServerConfig)
-    monitoring: MonitoringConfig = Field(default_factory=MonitoringConfig)
-    security: SecurityConfig = Field(default_factory=SecurityConfig)
-
-    # Runtime fields (not from config files)
-    config_file: Optional[str] = Field(default=None, exclude=True)
-    profile: str = Field(default="default", exclude=True)
-
-    @model_validator(mode="after")
-    def validate_cross_fields(self) -> "Config":
-        """Validate cross-field constraints."""
-        if self.memory.max_ram_gb < 8:
-            raise ValueError("max_ram_gb must be at least 8GB for MoE models")
-        if self.model.expert_parallelism * self.model.tensor_parallelism * self.model.pipeline_parallelism > 8:
-            raise ValueError("Total parallelism (expert * tensor * pipeline) cannot exceed 8")
-        if self.security.api_key_enabled and not self.security.api_keys and not self.security.jwt_secret:
-            raise ValueError("API key enabled but no API keys or JWT secret configured")
-        if self.security.tls_enabled and (not self.security.tls_cert_path or not self.security.tls_key_path):
-            raise ValueError("TLS enabled but cert/key paths not configured")
-        return self
-
+    def from_dict(cls, data: Dict[str, Any]) -> "Config":
+        """Create config from dictionary."""
+        model_data = data.get('model', {})
+        engine_data = data.get('engine', {})
+        hardware_data = data.get('hardware', {})
+        
+        return cls(
+            model=ModelConfig(**model_data),
+            engine=EngineConfig(**engine_data),
+            hardware=HardwareConfig(**hardware_data),
+            log_level=data.get('log_level', 'INFO'),
+            log_format=data.get('log_format', 'json'),
+            log_file=data.get('log_file'),
+            metrics_enabled=data.get('metrics_enabled', True),
+            metrics_port=data.get('metrics_port', 9090),
+            api_host=data.get('api_host', '0.0.0.0'),
+            api_port=data.get('api_port', 8000),
+            api_workers=data.get('api_workers', 1),
+        )
+    
     def to_dict(self) -> Dict[str, Any]:
-        """Export configuration as dictionary."""
-        return self.model_dump(exclude={"config_file", "profile"})
-
-    def save_yaml(self, path: Union[str, Path]) -> None:
+        """Convert config to dictionary."""
+        return asdict(self)
+    
+    def to_yaml(self, path: str) -> None:
         """Save configuration to YAML file."""
-        path = Path(path)
-        path.parent.mkdir(parents=True, exist_ok=True)
-        with open(path, "w") as f:
-            yaml.safe_dump(self.to_dict(), f, default_flow_style=False, sort_keys=False)
+        with open(path, 'w') as f:
+            yaml.dump(self.to_dict(), f, default_flow_style=False, sort_keys=False)
+    
+    def apply_env_overrides(self) -> "Config":
+        """Apply environment variable overrides."""
+        env_mappings = {
+            'MOE_MODEL_PATH': ('model', 'path'),
+            'MOE_MODEL_NAME': ('model', 'name'),
+            'MOE_DTYPE': ('model', 'dtype'),
+            'MOE_CONTEXT_LENGTH': ('model', 'context_length', int),
+            'MOE_NUM_EXPERTS': ('model', 'num_experts', int),
+            'MOE_EXPERTS_PER_TOKEN': ('model', 'experts_per_token', int),
+            'MOE_MAX_BATCH_SIZE': ('engine', 'max_batch_size', int),
+            'MOE_TEMPERATURE': ('engine', 'temperature', float),
+            'MOE_TOP_P': ('engine', 'top_p', float),
+            'MOE_MAX_NEW_TOKENS': ('engine', 'max_new_tokens', int),
+            'MOE_DEVICE': ('hardware', 'device'),
+            'MOE_CPU_THREADS': ('hardware', 'cpu_threads', int),
+            'MOE_MEMORY_LIMIT_GB': ('hardware', 'memory_limit_gb', float),
+            'MOE_OFFLOAD_FOLDER': ('hardware', 'offload_folder'),
+            'MOE_GPU_LAYERS': ('hardware', 'gpu_layers', int),
+            'MOE_LOG_LEVEL': (None, 'log_level'),
+            'MOE_API_HOST': (None, 'api_host'),
+            'MOE_API_PORT': (None, 'api_port', int),
+            'MOE_API_WORKERS': (None, 'api_workers', int),
+        }
+        
+        for env_var, mapping in env_mappings.items():
+            value = os.environ.get(env_var)
+            if value is not None:
+                if len(mapping) == 3:
+                    section, key, converter = mapping
+                    value = converter(value)
+                else:
+                    section, key = mapping
+                
+                if section is None:
+                    setattr(self, key, value)
+                else:
+                    section_obj = getattr(self, section)
+                    setattr(section_obj, key, value)
+        
+        return self
 
 
 @lru_cache(maxsize=1)
-def load_config(
-    config_file: Optional[Union[str, Path]] = None,
-    profile: str = "default",
-    env_overrides: bool = True,
-) -> Config:
-    """
-    Load configuration from YAML file with environment variable overrides.
-
-    Args:
-        config_file: Path to YAML config file. If None, searches default locations.
-        profile: Configuration profile ("default" or "prod").
-        env_overrides: Whether to apply environment variable overrides.
-
-    Returns:
-        Config: Loaded and validated configuration.
-    """
-    config_data: Dict[str, Any] = {}
-
-    # Determine config file path
-    if config_file is None:
-        search_paths = [
-            Path.cwd() / f"config/{profile}.yaml",
-            Path.cwd() / "config/default.yaml",
-            Path(__file__).parent.parent / f"config/{profile}.yaml",
-            Path(__file__).parent.parent / "config/default.yaml",
-        ]
-        for p in search_paths:
-            if p.exists():
-                config_file = p
-                break
-
-    # Load from YAML if found
-    if config_file and Path(config_file).exists():
-        with open(config_file, "r") as f:
-            config_data = yaml.safe_load(f) or {}
-
-    # Create config instance (env vars automatically applied by BaseSettings)
-    config = Config(
-        **(config_data or {}),
-        config_file=str(config_file) if config_file else None,
-        profile=profile,
-    )
-
-    return config
+def get_config(config_path: Optional[str] = None) -> Config:
+    """Get global configuration instance."""
+    if config_path is None:
+        config_path = os.environ.get('MOE_CONFIG_PATH', 'config/default.yaml')
+    
+    config_path = Path(config_path)
+    if config_path.exists():
+        config = Config.from_yaml(str(config_path))
+    else:
+        config = Config()
+    
+    return config.apply_env_overrides()
 
 
-def merge_configs(base: Config, override: Dict[str, Any]) -> Config:
-    """Merge override dict into base config, returning new Config instance."""
-    base_dict = base.to_dict()
-    _deep_merge(base_dict, override)
-    return Config(**base_dict, config_file=base.config_file, profile=base.profile)
+def validate_config(config: Config) -> List[str]:
+    """Validate configuration and return list of warnings."""
+    warnings = []
+    
+    # Check model path exists
+    model_path = Path(config.model.path)
+    if not model_path.exists():
+        warnings.append(f"Model path does not exist: {model_path}")
+    
+    # Check memory requirements
+    estimated_memory = estimate_memory_requirements(config)
+    if estimated_memory > config.hardware.memory_limit_gb:
+        warnings.append(
+            f"Estimated memory ({estimated_memory:.1f}GB) exceeds limit "
+            f"({config.hardware.memory_limit_gb}GB)"
+        )
+    
+    # Check offload folder
+    offload_path = Path(config.hardware.offload_folder)
+    if not offload_path.exists():
+        try:
+            offload_path.mkdir(parents=True, exist_ok=True)
+        except Exception as e:
+            warnings.append(f"Cannot create offload folder: {e}")
+    
+    return warnings
 
 
-def _deep_merge(base: Dict[str, Any], override: Dict[str, Any]) -> None:
-    """Recursively merge override into base."""
-    for key, value in override.items():
-        if key in base and isinstance(base[key], dict) and isinstance(value, dict):
-            _deep_merge(base[key], value)
-        else:
-            base[key] = value
+def estimate_memory_requirements(config: Config) -> float:
+    """Estimate memory requirements in GB."""
+    model = config.model
+    hardware = config.hardware
+    
+    # Parameter count estimation
+    # Embedding: vocab_size * hidden_size
+    embedding_params = model.vocab_size * model.hidden_size
+    
+    # Per layer: attention + FFN (MoE)
+    # Attention: 4 * hidden_size^2 (Q, K, V, O projections)
+    attention_params = 4 * model.hidden_size * model.hidden_size
+    
+    # MoE FFN: num_experts * 2 * hidden_size * intermediate_size (gate + up + down)
+    # Actually: gate_proj + up_proj + down_proj per expert
+    ffn_params_per_expert = 3 * model.hidden_size * model.intermediate_size
+    moe_params = model.num_experts * ffn_params_per_expert
+    
+    # Layer norm params (2 per layer)
+    ln_params = 2 * model.hidden_size
+    
+    total_params_per_layer = attention_params + moe_params + ln_params
+    total_params = embedding_params + model.num_layers * total_params_per_layer
+    
+    # Memory per parameter based on dtype
+    dtype_bytes = {
+        'fp32': 4,
+        'fp16': 2,
+        'bf16': 2,
+        'int8': 1,
+        'int4': 0.5,
+    }
+    bytes_per_param = dtype_bytes.get(model.dtype, 2)
+    
+    model_memory_gb = (total_params * bytes_per_param) / (1024**3)
+    
+    # KV cache memory
+    # 2 * num_layers * num_kv_heads * head_dim * max_seq_len * batch_size * bytes
+    head_dim = model.hidden_size // model.num_attention_heads
+    kv_cache_gb = (
+        2 * model.num_layers * model.num_key_value_heads * head_dim *
+        config.engine.max_sequence_length * config.engine.max_batch_size * bytes_per_param
+    ) / (1024**3)
+    
+    # Activation memory (rough estimate)
+    activation_gb = (
+        config.engine.max_batch_size * config.engine.max_sequence_length *
+        model.hidden_size * bytes_per_param * 4  # factor for intermediate activations
+    ) / (1024**3)
+    
+    total = model_memory_gb + kv_cache_gb + activation_gb
+    
+    # Add overhead for offloading structures
+    total *= 1.15
+    
+    return total

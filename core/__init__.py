@@ -10,14 +10,18 @@ __author__ = "Thalamus Code Project"
 __email__ = "dev@thalamus.ai"
 __license__ = "MIT"
 
-from .config import Config, load_config
-from .engine import MoEEngine
+from .config import Config, ModelConfig, EngineConfig, HardwareConfig
+from .engine import MoEEngine, InferenceRequest, InferenceResponse
 from .logging_utils import setup_logging, get_logger
 
 __all__ = [
     "Config",
-    "load_config",
+    "ModelConfig",
+    "EngineConfig",
+    "HardwareConfig",
     "MoEEngine",
+    "InferenceRequest",
+    "InferenceResponse",
     "setup_logging",
     "get_logger",
 ]
